@@ -196,18 +196,28 @@ impl Bridge {
         let name = file_name(path);
         let host_file = self.host_file(doc);
         let save_as = crate::hostmode::save_as(&name, host_file.as_deref());
-        let mut confirms = self.confirms.borrow_mut();
-        if !confirms.on {
-            drop(confirms);
+        // Nothing is held while the host hears the save: in the page's own document it hears it at
+        // once, inside this call, and may answer at once too (`saved`, `save-failed`).
+        let ticket = {
+            let mut confirms = self.confirms.borrow_mut();
+            if !confirms.on {
+                None
+            } else {
+                confirms.last = confirms.last.wrapping_add(1);
+                let ticket = confirms.last;
+                // Waited for before it is sent, so an answer given at once finds it. After a Save
+                // As is stored the host has the new file: the next Save of it is no Save As.
+                confirms.waiting.push((ticket, doc, save_as.then(|| name.clone())));
+                Some(ticket)
+            }
+        };
+        let Some(ticket) = ticket else {
             return if self.post_save_of(doc, path, bytes, auto) { Delivery::Delivered } else { Delivery::Refused };
-        }
-        let ticket = confirms.last.wrapping_add(1);
+        };
         if self.ext.post_save(&name, bytes, Some(&ticket.to_string()), save_as, Some(doc), auto).is_err() {
+            self.confirms.borrow_mut().waiting.retain(|(t, ..)| *t != ticket);
             return Delivery::Refused;
         }
-        confirms.last = ticket;
-        // After a Save As is stored the host has the new file: the next Save of it is no Save As.
-        confirms.waiting.push((ticket, doc, save_as.then_some(name)));
         Delivery::Waiting(ticket)
     }
 

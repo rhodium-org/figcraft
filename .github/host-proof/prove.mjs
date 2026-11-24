@@ -19,6 +19,12 @@ window.__log = [];
     const d = e.detail || {};
     window.__log.push({ kind: k, ...Object.fromEntries(Object.entries(d).filter(([n]) => n !== 'bytes')), bytes: d.bytes ? d.bytes.byteLength : undefined, at: performance.now() });
   });
+  // A host may answer a save inside its own listener, before FigCraft's dispatch returns.
+  c.addEventListener('figcraft:save', (e) => {
+    const how = window.__answerAtOnce;
+    if (!how || !e.detail || e.detail.id === undefined) return;
+    c.dispatchEvent(new CustomEvent('figcraft:' + how, { detail: how === 'saved' ? { id: e.detail.id } : { id: e.detail.id, message: 'Refused at once.' } }));
+  });
 }
 </script>
 `;
@@ -246,6 +252,20 @@ try {
   await pause(500);
   const refused = (await since(t)).filter((e) => e.kind === 'opened');
   check('an open the app cannot take still uses its number and says no document', refused.length === 1 && refused[0].doc === null && refused[0].open === opened[1].open + 1, refused);
+
+  // ── A host that answers a save at once, inside its own listener ────────────────────
+  await page.evaluate(() => { window.__answerAtOnce = 'save-failed'; });
+  await edit(1050);
+  await menu('file.save');
+  await pause(800);
+  const alive = await page.evaluate(() => window.figcraft.inspect().then((d) => d.dirty, (e) => 'gone: ' + e));
+  check('an answer of save-failed given inside the save listener leaves FigCraft running and the design unsaved', alive === true, alive);
+  await page.evaluate(() => { window.__answerAtOnce = 'saved'; });
+  await menu('file.save');
+  await pause(800);
+  const clean = await page.evaluate(() => window.figcraft.inspect().then((d) => d.dirty, (e) => 'gone: ' + e));
+  check('an answer of saved given inside the save listener counts the save', clean === false, clean);
+  await page.evaluate(() => { window.__answerAtOnce = undefined; });
 
   // ── AutoSave through a host that writes in place ───────────────────────────────────
   await exec('pref.autoSave', { on: true });
