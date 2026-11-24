@@ -92,6 +92,28 @@ impl FileSnapshot {
         refuse_overwriting_changes(ds, path)?;
         write(path, bytes)?;
         ds.note_on_disk();
+        self.mark_saved(s);
+        Ok(true)
+    }
+
+    /// A host page confirmed that it stored this snapshot's bytes, handed to it as a download
+    /// (`file.saveAs {data: true}`): the file counts as saved as of the snapshot, and edits since
+    /// stay unsaved. False when the document was closed or given a path since.
+    ///
+    /// Unlike [`save`](Self::save), a save since doesn't make the snapshot stale: the host answers
+    /// each save it was handed, and two can be on their way at once. One answered out of order
+    /// marks the older content saved, so the newer edits show as unsaved, never the reverse.
+    pub fn delivered(self, s: &mut Session) -> bool {
+        if !s.docs.iter().any(|d| d.uid == self.uid && d.path == self.path) {
+            return false;
+        }
+        self.mark_saved(s);
+        true
+    }
+
+    /// The file counts as saved as of the snapshot.
+    fn mark_saved(self, s: &mut Session) {
+        let Some(ds) = s.docs.iter_mut().find(|d| d.uid == self.uid) else { return };
         // The history or branches may have changed since: then they still count as unsaved.
         if ds.revision == self.revision {
             ds.versions_changed = false;
@@ -99,7 +121,6 @@ impl FileSnapshot {
         ds.saved_doc = self.doc;
         ds.revision += 1;
         branch_tabs_saved(s, self.uid);
-        Ok(true)
     }
 }
 

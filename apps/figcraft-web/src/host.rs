@@ -27,14 +27,23 @@
 //! - `figcraft:dirty` whenever unsaved changes appear or go away, `figcraft:failed` when the app
 //!   couldn't start.
 //!
+//! - Beyond the crate's contract ([`crate::host_ext`], rhodium-org fork): `figcraft:places` with
+//!   any place makes File ▸ Open (Ctrl+O, Open on the home screen) send `figcraft:open-request`
+//!   instead of opening the browser's picker, and the host sends the file; after
+//!   `figcraft:confirm-saves {value: true}` each document Save carries an `id` and counts once the
+//!   host answers `figcraft:saved {id}`, while `figcraft:save-failed {id, message}` leaves the
+//!   document unsaved and shows why. Copies and exports are never waited for.
+//!
 //! In host mode the app starts with no document (the home screen) and the host sends the file to
 //! edit; `?author=` names the user for comments and board notes.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use craft_web_host::web::{FileData, Host, Message};
-use figcraft_ui_egui::FigApp;
+use figcraft_ui_egui::{Delivery, FigApp};
+
+use crate::host_ext::Ext;
 
 /// The app id in the host messages (`figcraft:ready`).
 const APP: &str = "figcraft";
@@ -46,9 +55,27 @@ const MAX_AUTHOR_CHARS: usize = 200;
 /// `(name, bytes)`.
 pub type OpenQueue = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
 
+/// Saves a host confirms ([`crate::host_ext`]): numbered once the host asks, and answered later.
+#[derive(Default)]
+struct Confirms {
+    /// The host asked for numbered saves (`confirm-saves {value: true}`).
+    on: bool,
+    /// The last ticket given.
+    last: u64,
+    /// Saves handed over and not yet answered: the ticket, and the name the document's file
+    /// becomes once it is stored (a Save As), if any.
+    waiting: Vec<(u64, Option<String>)>,
+    /// Answers heard and not yet taken by the app.
+    settled: Vec<(u64, Result<(), String>)>,
+}
+
 #[derive(Clone)]
 pub struct Bridge {
     host: Rc<Host>,
+    ext: Ext,
+    /// The host declared places of its own: it opens files ([`crate::host_ext`]).
+    places: Rc<Cell<bool>>,
+    confirms: Rc<RefCell<Confirms>>,
     /// The file the host opened, and after a `saveAs` hand-over the document's file: the name a
     /// Save under (`saveAs: false`) is decided against.
     host_file: Rc<RefCell<Option<String>>>,
@@ -59,19 +86,73 @@ impl Bridge {
     /// `data-host="page"` on the canvas, an unframed `?host=parent` page (it stays the normal app
     /// with downloads), or a parent on another origin.
     pub fn connect(canvas: &web_sys::HtmlCanvasElement) -> Option<Self> {
-        Some(Self { host: Rc::new(Host::connect(APP, canvas)?), host_file: Rc::default() })
+        let host = Host::connect(APP, canvas)?;
+        let ext = Ext::new(APP, host.mode(), canvas)?;
+        Some(Self { host: Rc::new(host), ext, places: Rc::default(), confirms: Rc::default(), host_file: Rc::default() })
     }
 
     /// Hear the files the host sends, and queue each one on `opens` for the app's own open path
     /// (the shell drains it into [`figcraft_ui_egui::pending_open`] every frame, so a host file
     /// opens like a dropped one).
     pub fn listen(&self, opens: OpenQueue, ctx: egui::Context) {
-        let host_file = self.host_file.clone();
-        self.host.listen(move |message| {
-            if let Message::Open { name, data } = message {
-                deliver_open(&opens, &ctx, &host_file, &name, &data);
+        let (host_file, confirms, repaint) = (self.host_file.clone(), self.confirms.clone(), ctx.clone());
+        self.host.listen(move |message| match message {
+            Message::Open { name, data } => deliver_open(&opens, &ctx, &host_file, &name, &data),
+            Message::Saved { id } => {
+                if let Some(ticket) = crate::hostmode::ticket(&serde_json::Value::String(id)) {
+                    settle(&confirms, &host_file, ticket, Ok(()));
+                    ctx.request_repaint();
+                }
             }
+            _ => {}
         });
+        // The extension messages (crate::host_ext).
+        let (places, confirms, host_file) = (self.places.clone(), self.confirms.clone(), self.host_file.clone());
+        self.ext.listen(move |kind, message| {
+            match kind {
+                "places" => places.set(crate::hostmode::offers_places(&message)),
+                "confirm-saves" => confirms.borrow_mut().on = crate::hostmode::flag(&message, "value"),
+                "save-failed" => {
+                    if let Some((ticket, why)) = crate::hostmode::save_failed(&message) {
+                        settle(&confirms, &host_file, ticket, Err(why));
+                    }
+                }
+                _ => return,
+            }
+            repaint.request_repaint();
+        });
+    }
+
+    /// Hand a document file the app saves to the host. Numbered, and answered later, once the
+    /// host asked to confirm saves; otherwise done when handed over, as before.
+    pub fn deliver(&self, path: &str, bytes: &[u8]) -> Delivery {
+        let name = file_name(path);
+        let host_file = self.host_file.borrow().clone();
+        let save_as = crate::hostmode::save_as(&name, host_file.as_deref());
+        let mut confirms = self.confirms.borrow_mut();
+        if !confirms.on {
+            drop(confirms);
+            return if self.post_save(path, bytes) { Delivery::Delivered } else { Delivery::Refused };
+        }
+        let ticket = confirms.last.wrapping_add(1);
+        if self.host.post_save(&name, bytes, Some(&ticket.to_string()), save_as).is_err() {
+            return Delivery::Refused;
+        }
+        confirms.last = ticket;
+        // After a Save As is stored the host has the new file: the next Save of it is no Save As.
+        confirms.waiting.push((ticket, save_as.then_some(name)));
+        Delivery::Waiting(ticket)
+    }
+
+    /// The saves the host answered since the last call.
+    pub fn settled_saves(&self) -> Vec<(u64, Result<(), String>)> {
+        std::mem::take(&mut self.confirms.borrow_mut().settled)
+    }
+
+    /// File ▸ Open, where the host declared places of its own: it is asked to open instead
+    /// (`open-request`); true when it was asked.
+    pub fn host_open(&self) -> bool {
+        self.places.get() && self.ext.post_open_request().is_ok()
     }
 
     /// `?author=`: the host's name for the user signs comments and board notes.
@@ -116,6 +197,20 @@ impl Bridge {
     pub fn set_dirty(&self, dirty: bool) {
         self.host.post_dirty(dirty);
     }
+}
+
+/// The host answered save `ticket`; one the bridge isn't waiting for (answered twice, made up)
+/// is ignored. A stored Save As makes its name the document's file.
+fn settle(confirms: &RefCell<Confirms>, host_file: &RefCell<Option<String>>, ticket: u64, outcome: Result<(), String>) {
+    let mut c = confirms.borrow_mut();
+    let Some(i) = c.waiting.iter().position(|(t, _)| *t == ticket) else { return };
+    let (_, becomes) = c.waiting.remove(i);
+    if outcome.is_ok()
+        && let Some(name) = becomes
+    {
+        *host_file.borrow_mut() = Some(name);
+    }
+    c.settled.push((ticket, outcome));
 }
 
 /// The file an open message carries, queued for the app's own open path, or nothing when the

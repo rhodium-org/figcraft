@@ -49,9 +49,76 @@ pub fn save_as(name: &str, host_file: Option<&str>) -> bool {
     }
 }
 
+/// The longest reason taken from a host's `save-failed`.
+const MAX_REASON_CHARS: usize = 500;
+
+/// Whether a host's `places` message offers any place to open from: a `places` list holding at
+/// least one entry with a non-empty string `id`. Anything else (no list, an empty one, junk)
+/// leaves File ▸ Open to the browser's picker.
+pub fn offers_places(message: &serde_json::Value) -> bool {
+    message["places"].as_array().is_some_and(|places| places.iter().any(|p| p["id"].as_str().is_some_and(|id| !id.trim().is_empty())))
+}
+
+/// A host message's boolean `key`: true only for JSON `true`.
+pub fn flag(message: &serde_json::Value, key: &str) -> bool {
+    message[key].as_bool() == Some(true)
+}
+
+/// A save's ticket from the `id` the host echoes back: the decimal number the bridge sent, as a
+/// string (the crate's `saved {id}`) or a number.
+pub fn ticket(id: &serde_json::Value) -> Option<u64> {
+    match id {
+        serde_json::Value::String(s) => s.parse().ok(),
+        serde_json::Value::Number(n) => n.as_u64(),
+        _ => None,
+    }
+}
+
+/// A host's `save-failed`: the save's ticket and what to tell the person, the host's own reason
+/// (trimmed and capped) or [`SAVE_FAILED`] when it gave none. `None` without a usable `id`.
+pub fn save_failed(message: &serde_json::Value) -> Option<(u64, String)> {
+    let ticket = ticket(&message["id"])?;
+    let reason: String = message["message"].as_str().map(str::trim).unwrap_or_default().chars().take(MAX_REASON_CHARS).collect();
+    Some((ticket, if reason.is_empty() { SAVE_FAILED.to_string() } else { reason }))
+}
+
+/// Said when the host refused a save without saying why.
+pub const SAVE_FAILED: &str = "The page didn't store the file, so it stays unsaved.";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn places_are_offered_only_by_a_list_with_a_real_place() {
+        assert!(offers_places(&json!({"places": [{"id": "computer", "label": "This computer"}, {"id": "github"}]})));
+        for junk in [json!({}), json!({"places": []}), json!({"places": "computer"}), json!({"places": [{"id": ""}, {"id": 3}, "x"]}), json!(null)] {
+            assert!(!offers_places(&junk), "{junk}");
+        }
+    }
+
+    #[test]
+    fn flags_are_true_only_for_true() {
+        assert!(flag(&json!({"value": true}), "value"));
+        for junk in [json!({"value": "true"}), json!({"value": 1}), json!({}), json!(null)] {
+            assert!(!flag(&junk, "value"), "{junk}");
+        }
+    }
+
+    #[test]
+    fn a_refused_save_names_its_ticket_and_a_reason() {
+        assert_eq!(
+            save_failed(&json!({"id": "4", "message": "  GitHub holds a newer version.  "})),
+            Some((4, "GitHub holds a newer version.".into()))
+        );
+        assert_eq!(save_failed(&json!({"id": 5})), Some((5, SAVE_FAILED.into())));
+        assert_eq!(save_failed(&json!({"id": "6", "message": ""})), Some((6, SAVE_FAILED.into())));
+        assert_eq!(save_failed(&json!({"id": "6", "message": "x".repeat(2000)})).map(|(_, m)| m.len()), Some(MAX_REASON_CHARS));
+        for junk in [json!({}), json!({"id": "a"}), json!({"id": -1}), json!({"id": null}), json!(null)] {
+            assert_eq!(save_failed(&junk), None, "{junk}");
+        }
+    }
 
     #[test]
     fn open_names_fall_back_to_the_default_when_the_host_sent_none() {

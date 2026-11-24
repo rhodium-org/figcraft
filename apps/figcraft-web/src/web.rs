@@ -281,6 +281,29 @@ impl Services for WebServices {
     fn host_file(&self) -> Option<String> {
         self.host.as_ref()?.host_file()
     }
+    /// A document file: to the host, which may answer later ([`crate::host`]), else as a download.
+    fn deliver(&mut self, name: &str, bytes: &[u8]) -> figcraft_ui_egui::Delivery {
+        // Downloads the page's control channel captures stay in the page, as `download`'s do.
+        if crate::api::capture(name, bytes) {
+            return figcraft_ui_egui::Delivery::Delivered;
+        }
+        match &self.host {
+            Some(bridge) => bridge.deliver(name, bytes),
+            None => {
+                if self.download(name, bytes) {
+                    figcraft_ui_egui::Delivery::Delivered
+                } else {
+                    figcraft_ui_egui::Delivery::Refused
+                }
+            }
+        }
+    }
+    fn settled_saves(&mut self) -> Vec<(u64, Result<(), String>)> {
+        self.host.as_ref().map(crate::host::Bridge::settled_saves).unwrap_or_default()
+    }
+    fn host_open(&mut self) -> bool {
+        self.host.as_ref().is_some_and(crate::host::Bridge::host_open)
+    }
     fn clipboard_set_text(&mut self, s: &str) {
         figcraft_ui_egui::egui_copy_text(&self.ctx, s);
     }

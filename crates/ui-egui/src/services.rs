@@ -29,6 +29,24 @@ pub trait Services {
     fn host_file(&self) -> Option<String> {
         None
     }
+    /// Hand a saved document file over, as [`Services::download`] does. A host page that
+    /// confirms saves (the browser's host mode, once it asks to) answers later: the save is then
+    /// [`Delivery::Waiting`] on its ticket until [`Services::settled_saves`] gives the answer, and
+    /// the document stays unsaved meanwhile.
+    fn deliver(&mut self, name: &str, bytes: &[u8]) -> Delivery {
+        if self.download(name, bytes) { Delivery::Delivered } else { Delivery::Refused }
+    }
+    /// The saves a host page answered since the last call: each ticket [`Services::deliver`]
+    /// gave, with `Err(why)` when the host did not store it.
+    fn settled_saves(&mut self) -> Vec<(u64, Result<(), String>)> {
+        Vec::new()
+    }
+    /// A host page that offers its own places to open from shows its own way to open a file
+    /// instead of a file picker (File ▸ Open, Ctrl+O, Open on the home screen): true when it took
+    /// the request, so the app asks the platform for no file.
+    fn host_open(&mut self) -> bool {
+        false
+    }
     /// A folder to write several files into.
     fn pick_folder(&mut self, _title: &str) -> DialogFuture {
         Box::pin(std::future::ready(None))
@@ -91,6 +109,17 @@ pub trait Services {
     /// Ask for them (the browser asks the person): they join the font list by name, each read when
     /// text uses it.
     fn ask_for_local_fonts(&mut self) {}
+}
+
+/// What became of a document file handed to [`Services::deliver`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Handed over and done: the file counts as saved now.
+    Delivered,
+    /// The host page answers later on this ticket ([`Services::settled_saves`]).
+    Waiting(u64),
+    /// Nothing was delivered.
+    Refused,
 }
 
 pub type DialogFuture = Pin<Box<dyn Future<Output = Option<PathBuf>>>>;

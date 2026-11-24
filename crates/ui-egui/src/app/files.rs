@@ -1,6 +1,6 @@
 use super::{
-    AUTO_SAVE_RETRY_SECS, AUTO_SAVE_SECS, AUTOSAVE_SECS, Arc, DialogFuture, FigApp, OPEN_EXTENSIONS, OsStr, Path, PathBuf, PendingDialog, PickFuture,
-    Picked, Poll, RepaintWaker, Services, TaskContext, Value, Waker, dialogs, i18n, json, repaint_in, windows,
+    AUTO_SAVE_RETRY_SECS, AUTO_SAVE_SECS, AUTOSAVE_SECS, Arc, Delivery, DialogFuture, FigApp, OPEN_EXTENSIONS, OsStr, Path, PathBuf, PendingDialog,
+    PickFuture, Picked, Poll, RepaintWaker, Services, TaskContext, Value, Waker, dialogs, i18n, json, repaint_in, windows,
 };
 
 impl FigApp {
@@ -41,11 +41,43 @@ impl FigApp {
     /// Save by handing the file over as a download. `keep`: the name a Save of a host-opened
     /// document keeps; `None` is a Save As, under the document's own name.
     fn save_download(&mut self, keep: Option<&str>) {
-        if let Some(r) = self.run("file.saveAs", json!({"data": true}))
-            && self.download(keep.unwrap_or_else(|| r["name"].as_str().unwrap_or_default()), &r)
-        {
-            self.run("file.markSaved", json!({}));
-            dialogs::file_saved(self, &r);
+        // The file as handed over: a host that confirms saves later marks it saved as of this.
+        let snapshot = self.session.docs.get(figcraft_engine::branches::file_tab(&self.session)).map(figcraft_engine::cmd::file::FileSnapshot::of);
+        let Some(r) = self.run("file.saveAs", json!({"data": true})) else { return };
+        let name = keep.map_or_else(|| r["name"].as_str().unwrap_or_default().to_string(), str::to_string);
+        use base64::Engine as _;
+        let bytes = r["data"].as_str().and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
+        match bytes.map(|b| self.services.deliver(&name, &b)) {
+            Some(Delivery::Delivered) => {
+                self.run("file.markSaved", json!({}));
+                dialogs::file_saved(self, &r);
+            }
+            Some(Delivery::Waiting(ticket)) => {
+                if let Some(snapshot) = snapshot {
+                    self.host_saves.push((ticket, snapshot, name));
+                }
+            }
+            Some(Delivery::Refused) | None => self.toast(i18n::trf("Couldn't download {name}", &[("name", &name)])),
+        }
+    }
+
+    /// The saves a host page answered: a stored one counts as saved as of what was handed over
+    /// (edits since stay unsaved); a refused one leaves the file unsaved and says why.
+    pub(crate) fn host_saves_tick(&mut self) {
+        if self.host_saves.is_empty() {
+            return;
+        }
+        for (ticket, outcome) in self.services.settled_saves() {
+            let Some(i) = self.host_saves.iter().position(|(t, ..)| *t == ticket) else { continue };
+            let (_, snapshot, name) = self.host_saves.remove(i);
+            match outcome {
+                Ok(()) => {
+                    if snapshot.delivered(&mut self.session) {
+                        self.toast(i18n::trf("Saved {name}", &[("name", &name)]));
+                    }
+                }
+                Err(why) => self.show_error(why),
+            }
         }
     }
 
@@ -72,6 +104,10 @@ impl FigApp {
     }
 
     pub fn open_dialog(&mut self) {
+        // A host page with places of its own shows its own way to open, and sends the file.
+        if self.services.host_open() {
+            return;
+        }
         // Opening needs no file in front: it goes ahead even if that file closed meanwhile.
         self.pick_file(i18n::tr("Open"), OPEN_EXTENSIONS, false, |app, file| {
             if app.run_user("file.open", file).is_some() {

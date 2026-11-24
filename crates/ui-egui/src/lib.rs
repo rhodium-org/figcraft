@@ -128,6 +128,8 @@ mod home_tests;
 #[cfg(test)]
 mod host_save_tests;
 #[cfg(test)]
+mod host_confirm_tests;
+#[cfg(test)]
 mod idle_tests;
 #[cfg(test)]
 mod ime_tests;
@@ -372,8 +374,8 @@ pub(crate) use clock::repaint_in;
 pub use clock::{AUTO_SAVE_SECS, AUTOSAVE_SECS, FrameClock, ToastClock};
 pub(crate) use open::{drop_overlay, dropped_bytes, is_document, opens};
 pub use services::{
-    ContentsFuture, DialogFuture, MAX_CLIPBOARD_PNG_BYTES, NoServices, ReadFuture, Services, browser_can_read, browser_stopped, egui_copy_png,
-    egui_copy_text, unreadable,
+    ContentsFuture, Delivery, DialogFuture, MAX_CLIPBOARD_PNG_BYTES, NoServices, ReadFuture, Services, browser_can_read, browser_stopped,
+    egui_copy_png, egui_copy_text, unreadable,
 };
 use services::{DialogDone, PickFuture, Picked, RepaintWaker};
 pub use state::{
@@ -798,6 +800,9 @@ pub struct FigApp {
     waiting: Vec<(String, Done)>,
     /// Native dialogs complete asynchronously so their modal event loop never re-enters winit.
     pending_dialog: Option<PendingDialog>,
+    /// Document files handed to a host page that confirms saves, waiting for its answer
+    /// ([`Services::deliver`]): the ticket, the file as handed over, and its name.
+    host_saves: Vec<(u64, figcraft_engine::cmd::file::FileSnapshot, String)>,
     /// The latest UI context schedules the first poll and wakes the app when a dialog completes.
     ui_context: Option<egui::Context>,
     /// The automation roots the app was started with: every frame and control request runs

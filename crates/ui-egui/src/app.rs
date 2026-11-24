@@ -1,6 +1,6 @@
 use super::clock::{AUTO_SAVE_RETRY_SECS, AUTO_SAVE_SECS, AUTOSAVE_SECS, CJK_CHANGES, FrameClock, TOAST_SECS, ToastClock, repaint_in};
 use super::open::OPEN_EXTENSIONS;
-use super::services::{DialogFuture, PickFuture, Picked, RepaintWaker, Services};
+use super::services::{Delivery, DialogFuture, PickFuture, Picked, RepaintWaker, Services};
 use super::state::{LEFT_PANEL, LeftTab, MOBILE_STRIP, MobilePanel, NARROW_WIDTH, PANEL_DEFAULT, RIGHT_PANEL, RightTab, TitleBar, fit_panels};
 use super::{
     Arc, Done, FigApp, NodeId, OsStr, Path, PathBuf, PendingAck, PendingDialog, Poll, Session, TaskContext, UiState, Value, Waker, a11y, branch_ui,
@@ -44,6 +44,7 @@ impl FigApp {
             window_requests: Vec::new(),
             waiting: Vec::new(),
             pending_dialog: None,
+            host_saves: Vec::new(),
             ui_context: None,
             automation_roots: None,
             control_input_doc: None,

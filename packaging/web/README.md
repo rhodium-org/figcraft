@@ -205,6 +205,19 @@ The messages and both transports are the shared contract of [`craft-web-host`](h
 - **Files from the host are untrusted input.** An opened file goes through the same reading as one picked with File ▸ Open or dropped on the window, with the same format limits; before it is copied into the app's memory, its size is checked against the host open limit (512 MB) and a larger file is refused, and a name is cut to 255 characters.
 - **The event and message names are the interface.** `figcraft:ready`, `figcraft:open`, `figcraft:save`, `figcraft:dirty` and `figcraft:failed`, and the fields they carry (the same as the `?host=parent` messages), stay stable; changing one is a breaking change.
 
+### A host's own Open, and saves a host confirms
+
+Two more messages, in both host modes, travel the same way with the same `figcraft:` prefix. A host
+that never sends them sees the behaviour above unchanged.
+
+| Message | Direction | Fields |
+|---|---|---|
+| `figcraft:places` | page → app | `places: [{ id, label }]`. With any place, File ▸ Open, Ctrl+O and Open on the home screen send `figcraft:open-request` instead of opening the browser's file picker, and the page sends the file with `figcraft:open`. An empty list gives Open back to the browser. Import and Place image still use the browser's picker. |
+| `figcraft:open-request` | app → page | none |
+| `figcraft:confirm-saves` | page → app | `value`: with `true`, each `figcraft:save` of the document carries an `id`, and the document stays unsaved until the page answers. Copies and exports carry none and are not waited for. |
+| `figcraft:saved` | page → app | `id`: stored. The document counts as saved as of the file handed over; an edit made meanwhile stays unsaved. |
+| `figcraft:save-failed` | page → app | `id`, `message?`: not stored. The document stays unsaved and the app shows `message`. |
+
 ## Renderer selection and fallback flags
 
 FigCraft renders with wgpu. It uses **WebGPU** when the browser has it and falls back to

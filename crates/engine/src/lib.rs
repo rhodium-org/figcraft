@@ -361,6 +361,8 @@ mod hide_publishing_tests;
 #[cfg(test)]
 mod history_behaviour_tests;
 #[cfg(test)]
+mod host_delivered_tests;
+#[cfg(test)]
 mod html_codegen_tests;
 #[cfg(test)]
 mod huge_stroke_tests;
