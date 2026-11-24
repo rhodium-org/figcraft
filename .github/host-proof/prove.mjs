@@ -187,7 +187,10 @@ try {
   check('a stored Save As leaves the design clean', (await doc()).ok?.dirty === false, (await doc()).ok?.dirty);
 
   // ── close-all: one design at a time, the host having asked the person ───────────────
+  // The edit is heard as unsaved first, so the host can then hear close-all make it clean.
+  t = await now();
   await edit(800);
+  await page.waitForFunction((x) => window.__log.some((e) => e.kind === 'dirty' && e.dirty === true && e.at > x), { timeout: 15_000 }, t);
   t = await now();
   await send('close-all', {});
   await page.evaluate((b64) => window.send('open', { name: 'Poster.figcraft', bytes: Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer }), made.ok.data);
