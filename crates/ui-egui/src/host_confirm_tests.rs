@@ -14,6 +14,8 @@ use crate::{Delivery, FigApp, Services};
 struct Shared {
     /// Every file handed over: (ticket, name).
     handed: Vec<(u64, String)>,
+    /// The document each was handed over for.
+    docs: Vec<u64>,
     /// Answers the host has given and the app has not yet taken.
     answers: Vec<(u64, Result<(), String>)>,
     /// Open requests the host took.
@@ -32,8 +34,9 @@ impl Services for ConfirmingHost {
     fn download(&mut self, _name: &str, _bytes: &[u8]) -> bool {
         panic!("a confirming host is handed document files through deliver");
     }
-    fn deliver(&mut self, name: &str, _bytes: &[u8]) -> Delivery {
+    fn deliver(&mut self, doc: u64, name: &str, _bytes: &[u8]) -> Delivery {
         let mut s = self.0.borrow_mut();
+        s.docs.push(doc);
         let ticket = s.handed.len() as u64 + 1;
         s.handed.push((ticket, name.to_string()));
         Delivery::Waiting(ticket)
@@ -41,7 +44,7 @@ impl Services for ConfirmingHost {
     fn settled_saves(&mut self) -> Vec<(u64, Result<(), String>)> {
         std::mem::take(&mut self.0.borrow_mut().answers)
     }
-    fn host_file(&self) -> Option<String> {
+    fn host_file(&self, _doc: u64) -> Option<String> {
         Some("design.figcraft".into())
     }
     fn host_open(&mut self) -> bool {
@@ -79,6 +82,7 @@ fn a_save_counts_once_the_host_answers_that_it_is_stored() {
     let (mut app, shared) = app();
     app.save();
     assert_eq!(shared.borrow().handed, [(1, "design.figcraft".to_string())]);
+    assert_eq!(shared.borrow().docs, [app.session.ds().unwrap().uid], "the save names its document");
     assert!(dirty(&app), "waiting for the host's answer");
     answer(&mut app, &shared, 1, Ok(()));
     assert!(!dirty(&app));

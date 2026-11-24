@@ -49,7 +49,30 @@ pub fn save_as(name: &str, host_file: Option<&str>) -> bool {
     }
 }
 
-/// The longest reason taken from a host's `save-failed`.
+/// One open document as the host hears of it in `documents`: its tab's stable id, its name and
+/// whether it has unsaved changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocEntry {
+    pub doc: u64,
+    pub name: String,
+    pub dirty: bool,
+}
+
+/// The `documents` message's fields: the tab in front (`null` on the home screen) and every open
+/// document in tab order.
+pub fn documents_fields(front: Option<u64>, docs: &[DocEntry]) -> serde_json::Value {
+    serde_json::json!({
+        "front": front,
+        "docs": docs.iter().map(|d| serde_json::json!({"doc": d.doc, "name": d.name, "dirty": d.dirty})).collect::<Vec<_>>(),
+    })
+}
+
+/// The `opened` message's fields: the host's number for its open (1 for the first file it sent),
+/// the document the file became (`null` when it didn't open) and the file's name.
+pub fn opened_fields(open: u64, doc: Option<u64>, name: &str) -> serde_json::Value {
+    serde_json::json!({"open": open, "doc": doc, "name": name})
+}
+
 const MAX_REASON_CHARS: usize = 500;
 
 /// Whether a host's `places` message offers any place to open from: a `places` list holding at
@@ -89,6 +112,23 @@ pub const SAVE_FAILED: &str = "The page didn't store the file, so it stays unsav
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn documents_name_the_front_tab_and_every_document_in_order() {
+        let docs = [DocEntry { doc: 7, name: "Poster".into(), dirty: true }, DocEntry { doc: 9, name: "Poster".into(), dirty: false }];
+        assert_eq!(
+            documents_fields(Some(9), &docs),
+            json!({"front": 9, "docs": [{"doc": 7, "name": "Poster", "dirty": true}, {"doc": 9, "name": "Poster", "dirty": false}]}),
+            "two documents of one name stay apart by their ids"
+        );
+        assert_eq!(documents_fields(None, &[]), json!({"front": null, "docs": []}), "the home screen");
+    }
+
+    #[test]
+    fn opened_names_the_host_s_open_and_the_document_or_none() {
+        assert_eq!(opened_fields(2, Some(7), "Poster.figcraft"), json!({"open": 2, "doc": 7, "name": "Poster.figcraft"}));
+        assert_eq!(opened_fields(3, None, "Broken.figcraft"), json!({"open": 3, "doc": null, "name": "Broken.figcraft"}));
+    }
 
     #[test]
     fn places_are_offered_only_by_a_list_with_a_real_place() {

@@ -15,7 +15,7 @@ const LOG = `<script>
 window.__log = [];
 {
   const c = document.getElementById('figcraft_canvas');
-  for (const k of ['ready', 'save', 'dirty', 'failed', 'open-request']) c.addEventListener('figcraft:' + k, (e) => {
+  for (const k of ['ready', 'save', 'dirty', 'failed', 'open-request', 'opened', 'documents']) c.addEventListener('figcraft:' + k, (e) => {
     const d = e.detail || {};
     window.__log.push({ kind: k, ...Object.fromEntries(Object.entries(d).filter(([n]) => n !== 'bytes')), bytes: d.bytes ? d.bytes.byteLength : undefined, at: performance.now() });
   });
@@ -204,6 +204,48 @@ try {
   await pause(500);
   check('an edit to the design opened after close-all is heard as unsaved', (await since(t)).filter((e) => e.kind === 'dirty').at(-1)?.dirty === true, await since(t));
   await page.screenshot({ path: join(OUT, '3-after-close-all.png') });
+
+  // ── Tabs: which document each open became, the tabs, and saves by document ─────────
+  await send('close-all', {});
+  await pause(300);
+  t = await now();
+  const sendOpen = (name) => page.evaluate((n, b64) => window.send('open', { name: n, bytes: Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer }), name, made.ok.data);
+  await sendOpen('Poster.figcraft');
+  await page.waitForFunction((x) => window.__log.filter((e) => e.kind === 'opened' && e.at > x).length >= 1, { timeout: 30_000 }, t);
+  await sendOpen('Poster.figcraft');
+  await page.waitForFunction((x) => window.__log.filter((e) => e.kind === 'opened' && e.at > x).length >= 2, { timeout: 30_000 }, t);
+  const opened = (await since(t)).filter((e) => e.kind === 'opened');
+  check('figcraft:opened names the document each open became, in the host\'s order, two of one name apart',
+    opened.length === 2 && opened[1].open === opened[0].open + 1 && typeof opened[0].doc === 'number' && typeof opened[1].doc === 'number' && opened[0].doc !== opened[1].doc && opened.every((o) => o.name === 'Poster.figcraft'), opened);
+  await pause(500);
+  let tabs = (await since(t)).filter((e) => e.kind === 'documents').at(-1);
+  const [first, second] = opened.map((o) => o.doc);
+  check('figcraft:documents lists both tabs, the second in front, neither unsaved',
+    tabs?.front === second && tabs?.docs?.map((d) => d.doc).join() === `${first},${second}` && tabs.docs.every((d) => d.dirty === false), tabs);
+
+  t = await now();
+  await edit(1000);
+  await pause(800);
+  tabs = (await since(t)).filter((e) => e.kind === 'documents').at(-1);
+  check('an edit marks only the tab in front unsaved in figcraft:documents',
+    tabs?.docs?.find((d) => d.doc === second)?.dirty === true && tabs?.docs?.find((d) => d.doc === first)?.dirty === false, tabs);
+
+  t = await now();
+  await menu('file.save');
+  await pause(500);
+  saves = (await since(t)).filter((e) => e.kind === 'save');
+  check('a Save carries the document it is a file of', saves.length === 1 && saves[0].doc === second && saves[0].saveAs === false && saves[0].name === 'Poster.figcraft', saves);
+  if (saves[0]?.id) await send('saved', { id: saves[0].id });
+  await pause(800);
+  tabs = (await since(t)).filter((e) => e.kind === 'documents').at(-1);
+  check('the stored save marks that tab saved in figcraft:documents', tabs?.docs?.find((d) => d.doc === second)?.dirty === false, tabs);
+
+  t = await now();
+  // Sent as a Blob, which FigCraft (it reads bytes only) refuses: a malformed open is dropped by the crate and has no number.
+  await page.evaluate(() => window.send('open', { name: 'AsBlob.figcraft', file: new Blob([new Uint8Array([1, 2, 3])]) }));
+  await pause(500);
+  const refused = (await since(t)).filter((e) => e.kind === 'opened');
+  check('an open the app cannot take still uses its number and says no document', refused.length === 1 && refused[0].doc === null && refused[0].open === opened[1].open + 1, refused);
 } finally {
   await writeFile(join(OUT, 'results.json'), JSON.stringify(results, null, 1));
   await browser.close();

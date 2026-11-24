@@ -218,6 +218,12 @@ that never sends them sees the behaviour above unchanged.
 | `figcraft:saved` | page → app | `id`: stored. The document counts as saved as of the file handed over; an edit made meanwhile stays unsaved. |
 | `figcraft:save-failed` | page → app | `id`, `message?`: not stored. The document stays unsaved and the app shows `message`. |
 | `figcraft:close-all` | page → app | none: every open document closes, unsaved changes and all, before the next `figcraft:open`. For a page that keeps one document at a time and has asked the person; otherwise each open adds a tab and unsaved changes in an older tab keep `figcraft:dirty` true. |
+| `figcraft:opened` | app → page | `open`, `doc`, `name`: the page's `figcraft:open` number `open` (1 for its first; every open counts, one the app can't take too) became the document `doc`, a tab's id that stays the same while it is open; `doc` is `null` when it didn't open. |
+| `figcraft:documents` | app → page | `front` (the tab in front, `null` on the home screen) and `docs: [{ doc, name, dirty }]` in tab order, sent whenever the tabs, their names, their unsaved state or the tab in front change. |
+
+Every `figcraft:save` also carries `doc`: the document it is a file of (for a copy or an export, the
+tab in front). The file a page opened is kept per document, so `saveAs` is decided for each tab,
+and two documents of one name never save as each other.
 
 ## Renderer selection and fallback flags
 

@@ -24,7 +24,7 @@ impl Services for Host {
         self.got.lock().unwrap().push(name.to_string());
         true
     }
-    fn host_file(&self) -> Option<String> {
+    fn host_file(&self, _doc: u64) -> Option<String> {
         self.file.map(str::to_string)
     }
 }

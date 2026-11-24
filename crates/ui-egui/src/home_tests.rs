@@ -948,3 +948,41 @@ fn home_screen_preferences_shortcut_and_sidebar_access() {
     click(&mut u, text_center(&s, "Preferences"));
     assert!(!u.app.ui.preferences, "Clicking Preferences in sidebar again should close it");
 }
+
+#[test]
+fn a_host_page_s_numbered_open_records_the_document_it_became() {
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="red"/></svg>"#.to_vec();
+    let arrived = std::rc::Rc::new(std::cell::RefCell::new(Some(Ok(svg))));
+    let mut u = first_run();
+    u.app.ui.pending_opens.push(crate::pending_open::PendingOpen {
+        label: "From the host.svg".into(),
+        params: json!({"name": "From the host.svg", crate::pending_open::HOST_OPEN: 3}),
+        command: "file.open",
+        target: None,
+        read: Some(later(&arrived)),
+    });
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    assert_eq!(u.app.ui.last_error, None, "the marker is taken out before file.open sees it");
+    assert_eq!(u.app.session.docs.len(), 1);
+    assert_eq!(u.app.ui.host_opened, [(3, Some(u.app.session.docs[0].uid))]);
+}
+
+#[test]
+fn a_host_page_s_numbered_open_that_failed_records_no_document() {
+    let arrived = std::rc::Rc::new(std::cell::RefCell::new(Some(Ok(b"not a design".to_vec()))));
+    let mut u = first_run();
+    u.app.ui.pending_opens.push(crate::pending_open::PendingOpen {
+        label: "Broken.figcraft".into(),
+        params: json!({"name": "Broken.figcraft", crate::pending_open::HOST_OPEN: 1}),
+        command: "file.open",
+        target: None,
+        read: Some(later(&arrived)),
+    });
+    for _ in 0..3 {
+        u.frame(vec![]);
+    }
+    assert!(u.app.session.docs.is_empty());
+    assert_eq!(u.app.ui.host_opened, [(1, None)]);
+}

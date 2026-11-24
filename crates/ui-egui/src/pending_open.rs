@@ -13,6 +13,10 @@ use crate::i18n::{tr, trf, trn};
 use crate::theme::{Tokens, semibold};
 use crate::{FigApp, ReadFuture, RepaintWaker};
 
+/// The key in a queued open's params naming a host page's number for that open
+/// ([`crate::UiState::host_opened`]); taken out before the command runs.
+pub const HOST_OPEN: &str = "hostOpen";
+
 /// A dropped file waiting to be opened (`file.open`, a document of its own) or imported
 /// (`file.import`, into the current document).
 pub struct PendingOpen {
@@ -144,9 +148,15 @@ pub fn pending_opens(app: &mut FigApp, ctx: &egui::Context) {
                 pending.params["x"] = json!(x);
             }
             let page = pending.target.as_ref().map(|t| (t.uid, t.page));
+            // A host page's file carries its number for the open, for the host to hear which document it became.
+            let host_open = pending.params.as_object_mut().and_then(|p| p.remove(HOST_OPEN)).and_then(|n| n.as_u64());
             let result = run_pending(app, pending);
             if result.is_some() && command == "file.open" {
                 app.ui.home = false;
+            }
+            if let Some(n) = host_open {
+                let doc = if result.is_some() { app.session.ds().ok().map(|d| d.uid) } else { None };
+                app.ui.host_opened.push((n, doc));
             }
             if canvas {
                 let right = result.as_ref().and_then(|r| r.get("id")?.as_u64()).and_then(|id| {

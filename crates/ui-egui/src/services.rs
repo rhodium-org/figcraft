@@ -24,16 +24,17 @@ pub trait Services {
     fn download(&mut self, _name: &str, _bytes: &[u8]) -> bool {
         false
     }
-    /// The document file a host page opened, where the app runs inside one (the browser's host
-    /// mode): a Save of that document keeps this name instead of the document's own.
-    fn host_file(&self) -> Option<String> {
+    /// The file a host page opened as document `doc` (its tab's uid), where the app runs inside
+    /// one (the browser's host mode): a Save of that document keeps this name instead of the
+    /// document's own.
+    fn host_file(&self, _doc: u64) -> Option<String> {
         None
     }
-    /// Hand a saved document file over, as [`Services::download`] does. A host page that
+    /// Hand a saved file of document `doc` (its tab's uid) over, as [`Services::download`] does. A host page that
     /// confirms saves (the browser's host mode, once it asks to) answers later: the save is then
     /// [`Delivery::Waiting`] on its ticket until [`Services::settled_saves`] gives the answer, and
     /// the document stays unsaved meanwhile.
-    fn deliver(&mut self, name: &str, bytes: &[u8]) -> Delivery {
+    fn deliver(&mut self, _doc: u64, name: &str, bytes: &[u8]) -> Delivery {
         if self.download(name, bytes) { Delivery::Delivered } else { Delivery::Refused }
     }
     /// The saves a host page answered since the last call: each ticket [`Services::deliver`]

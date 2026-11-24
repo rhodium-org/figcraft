@@ -71,6 +71,11 @@ impl FileSnapshot {
         }
     }
 
+    /// The tab the snapshot is of.
+    pub fn uid(&self) -> u64 {
+        self.uid
+    }
+
     /// The file's bytes: content, thumbnail and version history.
     pub fn encode(&self) -> Result<Vec<u8>> {
         let mut doc = (*self.doc).clone();

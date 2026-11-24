@@ -212,20 +212,28 @@ impl eframe::App for WebShell {
         }
         // Files the host sent join the app's own open queue (a dropped file's): the same
         // "Opening as a new file" card, and `file.open` with the contents once read.
-        for (name, bytes) in std::mem::take(&mut *self.opens.borrow_mut()) {
+        // Each carries the host's number for it, for `opened` once it has opened.
+        for (n, name, bytes) in std::mem::take(&mut *self.opens.borrow_mut()) {
             let read: figcraft_ui_egui::ReadFuture = Box::pin(std::future::ready(Ok(bytes)));
             self.fig.ui.pending_opens.push(figcraft_ui_egui::pending_open::PendingOpen {
                 label: name.clone(),
-                params: serde_json::json!({ "name": name }),
+                params: serde_json::json!({ "name": name, figcraft_ui_egui::pending_open::HOST_OPEN: n }),
                 command: "file.open",
                 target: None,
                 read: Some(read),
             });
         }
         figcraft_ui_egui::windows::guard(&mut self.fig, ctx, |fig| fig.background_tick(ctx));
-        // The host hears when unsaved changes appear or go away (crate::host).
+        // The host hears when unsaved changes appear or go away, which document each file it sent
+        // became, and the tabs (crate::host).
         if let Some(bridge) = &self.host {
             bridge.set_dirty(self.fig.session.docs.iter().any(|d| d.is_dirty()));
+            for (n, doc) in std::mem::take(&mut self.fig.ui.host_opened) {
+                bridge.opened(n, doc);
+            }
+            let docs = self.fig.session.docs.iter().map(|d| crate::hostmode::DocEntry { doc: d.uid, name: d.doc.name.clone(), dirty: d.is_dirty() });
+            let front = if self.fig.ui.home { None } else { self.fig.session.ds().ok().map(|d| d.uid) };
+            bridge.set_documents(front, docs.collect());
         }
     }
 
@@ -295,17 +303,17 @@ impl Services for WebServices {
             }
         }
     }
-    fn host_file(&self) -> Option<String> {
-        self.host.as_ref()?.host_file()
+    fn host_file(&self, doc: u64) -> Option<String> {
+        self.host.as_ref()?.host_file(doc)
     }
     /// A document file: to the host, which may answer later ([`crate::host`]), else as a download.
-    fn deliver(&mut self, name: &str, bytes: &[u8]) -> figcraft_ui_egui::Delivery {
+    fn deliver(&mut self, doc: u64, name: &str, bytes: &[u8]) -> figcraft_ui_egui::Delivery {
         // Downloads the page's control channel captures stay in the page, as `download`'s do.
         if crate::api::capture(name, bytes) {
             return figcraft_ui_egui::Delivery::Delivered;
         }
         match &self.host {
-            Some(bridge) => bridge.deliver(name, bytes),
+            Some(bridge) => bridge.deliver(doc, name, bytes),
             None => {
                 if self.download(name, bytes) {
                     figcraft_ui_egui::Delivery::Delivered

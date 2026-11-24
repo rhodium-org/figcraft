@@ -12,6 +12,9 @@
 //! | `confirm-saves` | host → app | `value`: from now on each document Save carries an `id` and counts once the host answers |
 //! | `save-failed` | host → app | `id`, `message?`: the save was not stored; the document stays unsaved and the app shows why |
 //! | `close-all` | host → app | none: close every open document, unsaved changes and all (the host asked the person), before the next `open` |
+//! | `opened` | app → host | `open`, `doc`, `name`: the host's `open` number `open` (1 for its first) became document `doc` (`null`: it didn't open) |
+//! | `documents` | app → host | `front`, `docs: [{ doc, name, dirty }]`: the tabs, sent whenever they, their names, their unsaved state or the tab in front change |
+//! | `save` | app → host | the crate's fields, and `doc`: the document it is a file of (a copy or export: the tab in front) |
 //!
 //! The crate's `saved {id}` confirms a save. A host that never sends `confirm-saves` sees saves
 //! without an `id`, as before, and one that declares no places leaves File ▸ Open to the browser's
@@ -20,7 +23,7 @@
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast as _, JsValue};
 
-use craft_web_host::{Mode, message_type};
+use craft_web_host::{Mode, file_name, message_type};
 
 /// The kinds this module hears from the host.
 pub const INCOMING: [&str; 4] = ["places", "confirm-saves", "save-failed", "close-all"];
@@ -93,23 +96,74 @@ impl Ext {
 
     /// `open-request`: File ▸ Open was asked for, and the host opens files.
     pub fn post_open_request(&self) -> Result<(), String> {
-        let message_type = message_type(self.app, "open-request");
+        self.post("open-request", &[], None)
+    }
+
+    /// A message whose fields are `fields`, a JSON object (`opened`, `documents`).
+    pub fn post_json(&self, kind: &str, fields: &serde_json::Value) -> Result<(), String> {
+        let object: js_sys::Object =
+            js_sys::JSON::parse(&fields.to_string()).ok().and_then(|v| v.dyn_into().ok()).ok_or_else(|| "couldn't build the message".to_string())?;
+        let message_type = message_type(self.app, kind);
         let error = |e: JsValue| e.as_string().unwrap_or_else(|| format!("{e:?}"));
         match &self.target {
             Target::Parent { parent, origin, .. } => {
-                let message = js_sys::Object::new();
-                js_sys::Reflect::set(&message, &JsValue::from_str("type"), &JsValue::from_str(&message_type))
+                js_sys::Reflect::set(&object, &JsValue::from_str("type"), &JsValue::from_str(&message_type))
                     .map_err(|_| "couldn't build the message".to_string())?;
-                parent.post_message(&message, origin).map_err(error)
+                parent.post_message(&object, origin).map_err(error)
             }
             Target::Page { canvas } => {
                 let init = web_sys::CustomEventInit::new();
-                init.set_detail(&js_sys::Object::new().into());
+                init.set_detail(&object.into());
                 let event = web_sys::CustomEvent::new_with_event_init_dict(&message_type, &init).map_err(error)?;
                 canvas.dispatch_event(&event).map(|_| ()).map_err(error)
             }
         }
     }
+
+    /// `save`: the crate's fields (`name`, `bytes`, `saveAs`, `id?`) and `doc`. The bytes go as a
+    /// transferred `ArrayBuffer`.
+    pub fn post_save(&self, name: &str, bytes: &[u8], id: Option<&str>, save_as: bool, doc: Option<u64>) -> Result<(), String> {
+        let buffer = js_sys::Uint8Array::from(bytes).buffer();
+        let mut fields =
+            vec![("name", JsValue::from(file_name(Some(name), "document"))), ("bytes", buffer.clone().into()), ("saveAs", save_as.into())];
+        if let Some(id) = id {
+            fields.push(("id", id.into()));
+        }
+        if let Some(doc) = doc {
+            // A tab's uid is far below 2^53, so a JavaScript number holds it exactly.
+            fields.push(("doc", JsValue::from_f64(doc as f64)));
+        }
+        self.post("save", &fields, Some(&buffer))
+    }
+
+    fn post(&self, kind: &str, fields: &[(&str, JsValue)], transfer: Option<&js_sys::ArrayBuffer>) -> Result<(), String> {
+        let message_type = message_type(self.app, kind);
+        let error = |e: JsValue| e.as_string().unwrap_or_else(|| format!("{e:?}"));
+        match &self.target {
+            Target::Parent { parent, origin, .. } => {
+                let message = object(&[("type", message_type.as_str().into())], fields)?;
+                match transfer {
+                    Some(buffer) => parent.post_message_with_transfer(&message, origin, &js_sys::Array::of1(buffer)),
+                    None => parent.post_message(&message, origin),
+                }
+                .map_err(error)
+            }
+            Target::Page { canvas } => {
+                let init = web_sys::CustomEventInit::new();
+                init.set_detail(&object(&[], fields)?.into());
+                let event = web_sys::CustomEvent::new_with_event_init_dict(&message_type, &init).map_err(error)?;
+                canvas.dispatch_event(&event).map(|_| ()).map_err(error)
+            }
+        }
+    }
+}
+
+fn object(head: &[(&str, JsValue)], fields: &[(&str, JsValue)]) -> Result<js_sys::Object, String> {
+    let m = js_sys::Object::new();
+    for (key, value) in head.iter().chain(fields) {
+        js_sys::Reflect::set(&m, &JsValue::from_str(key), value).map_err(|_| "couldn't build the message".to_string())?;
+    }
+    Ok(m)
 }
 
 /// The extension kind a parent's message names for `app`, or `None` for anything else (the

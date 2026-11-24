@@ -126,9 +126,9 @@ mod home_recents_tests;
 #[cfg(test)]
 mod home_tests;
 #[cfg(test)]
-mod host_save_tests;
-#[cfg(test)]
 mod host_confirm_tests;
+#[cfg(test)]
+mod host_save_tests;
 #[cfg(test)]
 mod idle_tests;
 #[cfg(test)]
@@ -533,6 +533,10 @@ pub struct UiState {
     /// ([`pending_open::pending_opens`]), and the frames it has been drawn.
     pub pending_opens: Vec<pending_open::PendingOpen>,
     pub pending_open_frames: u8,
+    /// Files a host page sent, once the open queue ran them: the host's number for each open (the
+    /// `hostOpen` its params carried) and the document it became, `None` when it didn't open.
+    /// The browser shell takes them to tell the host which document each file is.
+    pub host_opened: Vec<(u64, Option<u64>)>,
     /// The latest successful file import's summary and compatibility notes.
     pub import_report: Option<import_report::Report>,
     /// Files the user opened whose fonts are yet to be checked (by document uid).
@@ -704,6 +708,7 @@ impl Default for UiState {
             last_error: None,
             pending_opens: Vec::new(),
             pending_open_frames: 0,
+            host_opened: Vec::new(),
             import_report: None,
             font_checks: Vec::new(),
             missing_fonts: None,

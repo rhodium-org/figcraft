@@ -47,7 +47,8 @@ impl FigApp {
         let name = keep.map_or_else(|| r["name"].as_str().unwrap_or_default().to_string(), str::to_string);
         use base64::Engine as _;
         let bytes = r["data"].as_str().and_then(|d| base64::engine::general_purpose::STANDARD.decode(d).ok());
-        match bytes.map(|b| self.services.deliver(&name, &b)) {
+        let doc = snapshot.as_ref().map_or(0, figcraft_engine::cmd::file::FileSnapshot::uid);
+        match bytes.map(|b| self.services.deliver(doc, &name, &b)) {
             Some(Delivery::Delivered) => {
                 self.run("file.markSaved", json!({}));
                 dialogs::file_saved(self, &r);
@@ -95,7 +96,7 @@ impl FigApp {
             if self.run("file.save", json!({})).is_some() {
                 self.toast(i18n::tr("Saved"));
             }
-        } else if let Some(name) = self.services.host_file().filter(|n| is_document_file(n)) {
+        } else if let Some(name) = self.session.docs.get(tab).and_then(|d| self.services.host_file(d.uid)).filter(|n| is_document_file(n)) {
             // A host-opened document is saved as the file the host gave: the host updates that file.
             self.save_download(Some(&name));
         } else {

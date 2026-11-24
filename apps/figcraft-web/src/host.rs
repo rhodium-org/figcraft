@@ -36,17 +36,25 @@
 //!   `figcraft:close-all` closes every open document, unsaved changes and all, before the next
 //!   `figcraft:open`: a host that keeps one document at a time sends it once the person agreed to
 //!   lose what was not saved, so the app's unsaved state is the new document's alone.
+//! - Tabs ([`crate::host_ext`]): every `figcraft:open` counts (1 for the host's first) and,
+//!   once it has opened, `figcraft:opened {open, doc, name}` says which document it became
+//!   (`doc: null` when it didn't open). `figcraft:documents {front, docs: [{doc, name, dirty}]}`
+//!   follows the tabs, their names, their unsaved state and the tab in front, and every
+//!   `figcraft:save` carries `doc`. The file the host opened, which decides `saveAs`, is kept
+//!   per document, so two documents of one name never save as each other.
 //!
 //! In host mode the app starts with no document (the home screen) and the host sends the file to
 //! edit; `?author=` names the user for comments and board notes.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use craft_web_host::web::{FileData, Host, Message};
 use figcraft_ui_egui::{Delivery, FigApp};
 
 use crate::host_ext::Ext;
+use crate::hostmode::DocEntry;
 
 /// The app id in the host messages (`figcraft:ready`).
 const APP: &str = "figcraft";
@@ -55,8 +63,8 @@ const APP: &str = "figcraft";
 const MAX_AUTHOR_CHARS: usize = 200;
 
 /// Files the host sent, on their way to the app's own open queue ([`figcraft_ui_egui::pending_open`]):
-/// `(name, bytes)`.
-pub type OpenQueue = Rc<RefCell<Vec<(String, Vec<u8>)>>>;
+/// `(the host's number for the open, name, bytes)`.
+pub type OpenQueue = Rc<RefCell<Vec<(u64, String, Vec<u8>)>>>;
 
 /// Saves a host confirms ([`crate::host_ext`]): numbered once the host asks, and answered later.
 #[derive(Default)]
@@ -65,9 +73,9 @@ struct Confirms {
     on: bool,
     /// The last ticket given.
     last: u64,
-    /// Saves handed over and not yet answered: the ticket, and the name the document's file
-    /// becomes once it is stored (a Save As), if any.
-    waiting: Vec<(u64, Option<String>)>,
+    /// Saves handed over and not yet answered: the ticket, the document, and the name the
+    /// document's file becomes once it is stored (a Save As), if any.
+    waiting: Vec<(u64, u64, Option<String>)>,
     /// Answers heard and not yet taken by the app.
     settled: Vec<(u64, Result<(), String>)>,
 }
@@ -81,9 +89,24 @@ pub struct Bridge {
     confirms: Rc<RefCell<Confirms>>,
     /// The host asked to close every open document (`close-all`), not yet done.
     close_all: Rc<Cell<bool>>,
-    /// The file the host opened, and after a `saveAs` hand-over the document's file: the name a
-    /// Save under (`saveAs: false`) is decided against.
-    host_file: Rc<RefCell<Option<String>>>,
+    /// Per document (its tab's uid), the file the host opened, and after a `saveAs` hand-over
+    /// the document's file: the name a Save under (`saveAs: false`) is decided against.
+    host_files: HostFiles,
+    /// The host's opens counted so far, and the names of those not yet opened, by number.
+    opens: Rc<RefCell<Opens>>,
+    /// What the host last heard in `documents`: the tab in front and the open documents.
+    told: Rc<RefCell<Option<Told>>>,
+}
+
+type HostFiles = Rc<RefCell<HashMap<u64, String>>>;
+
+/// The tab in front and the open documents, as `documents` last told them.
+type Told = (Option<u64>, Vec<DocEntry>);
+
+#[derive(Default)]
+struct Opens {
+    last: u64,
+    names: HashMap<u64, String>,
 }
 
 impl Bridge {
@@ -93,26 +116,36 @@ impl Bridge {
     pub fn connect(canvas: &web_sys::HtmlCanvasElement) -> Option<Self> {
         let host = Host::connect(APP, canvas)?;
         let ext = Ext::new(APP, host.mode(), canvas)?;
-        Some(Self { host: Rc::new(host), ext, places: Rc::default(), confirms: Rc::default(), close_all: Rc::default(), host_file: Rc::default() })
+        Some(Self {
+            host: Rc::new(host),
+            ext,
+            places: Rc::default(),
+            confirms: Rc::default(),
+            close_all: Rc::default(),
+            host_files: Rc::default(),
+            opens: Rc::default(),
+            told: Rc::default(),
+        })
     }
 
     /// Hear the files the host sends, and queue each one on `opens` for the app's own open path
     /// (the shell drains it into [`figcraft_ui_egui::pending_open`] every frame, so a host file
     /// opens like a dropped one).
     pub fn listen(&self, opens: OpenQueue, ctx: egui::Context) {
-        let (host_file, confirms, repaint) = (self.host_file.clone(), self.confirms.clone(), ctx.clone());
+        let (host_files, confirms, counted, ext, repaint) =
+            (self.host_files.clone(), self.confirms.clone(), self.opens.clone(), self.ext.clone(), ctx.clone());
         self.host.listen(move |message| match message {
-            Message::Open { name, data } => deliver_open(&opens, &ctx, &host_file, &name, &data),
+            Message::Open { name, data } => deliver_open(&opens, &counted, &ext, &ctx, &name, &data),
             Message::Saved { id } => {
                 if let Some(ticket) = crate::hostmode::ticket(&serde_json::Value::String(id)) {
-                    settle(&confirms, &host_file, ticket, Ok(()));
+                    settle(&confirms, &host_files, ticket, Ok(()));
                     ctx.request_repaint();
                 }
             }
             _ => {}
         });
         // The extension messages (crate::host_ext).
-        let (places, confirms, host_file, close_all) = (self.places.clone(), self.confirms.clone(), self.host_file.clone(), self.close_all.clone());
+        let (places, confirms, host_files, close_all) = (self.places.clone(), self.confirms.clone(), self.host_files.clone(), self.close_all.clone());
         self.ext.listen(move |kind, message| {
             match kind {
                 "places" => places.set(crate::hostmode::offers_places(&message)),
@@ -120,7 +153,7 @@ impl Bridge {
                 "close-all" => close_all.set(true),
                 "save-failed" => {
                     if let Some((ticket, why)) = crate::hostmode::save_failed(&message) {
-                        settle(&confirms, &host_file, ticket, Err(why));
+                        settle(&confirms, &host_files, ticket, Err(why));
                     }
                 }
                 _ => return,
@@ -129,25 +162,48 @@ impl Bridge {
         });
     }
 
-    /// Hand a document file the app saves to the host. Numbered, and answered later, once the
-    /// host asked to confirm saves; otherwise done when handed over, as before.
-    pub fn deliver(&self, path: &str, bytes: &[u8]) -> Delivery {
+    /// Hand a file of document `doc` the app saves to the host. Numbered, and answered later,
+    /// once the host asked to confirm saves; otherwise done when handed over, as before.
+    pub fn deliver(&self, doc: u64, path: &str, bytes: &[u8]) -> Delivery {
         let name = file_name(path);
-        let host_file = self.host_file.borrow().clone();
+        let host_file = self.host_file(doc);
         let save_as = crate::hostmode::save_as(&name, host_file.as_deref());
         let mut confirms = self.confirms.borrow_mut();
         if !confirms.on {
             drop(confirms);
-            return if self.post_save(path, bytes) { Delivery::Delivered } else { Delivery::Refused };
+            return if self.post_save_of(doc, path, bytes) { Delivery::Delivered } else { Delivery::Refused };
         }
         let ticket = confirms.last.wrapping_add(1);
-        if self.host.post_save(&name, bytes, Some(&ticket.to_string()), save_as).is_err() {
+        if self.ext.post_save(&name, bytes, Some(&ticket.to_string()), save_as, Some(doc)).is_err() {
             return Delivery::Refused;
         }
         confirms.last = ticket;
         // After a Save As is stored the host has the new file: the next Save of it is no Save As.
-        confirms.waiting.push((ticket, save_as.then_some(name)));
+        confirms.waiting.push((ticket, doc, save_as.then_some(name)));
         Delivery::Waiting(ticket)
+    }
+
+    /// The host's open number `open` became document `doc` (`None`: it didn't open): the host
+    /// hears it, and the file it sent is that document's.
+    pub fn opened(&self, open: u64, doc: Option<u64>) {
+        let name = self.opens.borrow_mut().names.remove(&open).unwrap_or_default();
+        if let Some(doc) = doc {
+            self.host_files.borrow_mut().insert(doc, name.clone());
+        }
+        let _ = self.ext.post_json("opened", &crate::hostmode::opened_fields(open, doc, &name));
+    }
+
+    /// The open documents and the tab in front, every frame: the host hears `documents` when
+    /// they changed, and forgets the files of documents no longer open.
+    pub fn set_documents(&self, front: Option<u64>, docs: Vec<DocEntry>) {
+        let now = (front, docs);
+        if self.told.borrow().as_ref() == Some(&now) {
+            return;
+        }
+        self.host_files.borrow_mut().retain(|doc, _| now.1.iter().any(|d| d.doc == *doc));
+        if self.ext.post_json("documents", &crate::hostmode::documents_fields(now.0, &now.1)).is_ok() {
+            *self.told.borrow_mut() = Some(now);
+        }
     }
 
     /// Whether the host asked to close every open document since the last call.
@@ -183,22 +239,30 @@ impl Bridge {
         let _ = self.host.post_failed(error, None);
     }
 
-    /// The document file the host opened or the last Save As made, if any.
-    pub fn host_file(&self) -> Option<String> {
-        self.host_file.borrow().clone()
+    /// The file the host opened as document `doc`, or the last Save As of it made, if any.
+    pub fn host_file(&self, doc: u64) -> Option<String> {
+        self.host_files.borrow().get(&doc).cloned()
     }
 
-    /// Hand a file the app would otherwise download to the host; `false` when nothing was
-    /// delivered. The `saveAs` rule is this module's documentation's.
+    /// Hand a file the app would otherwise download (a copy or an export) to the host, as a file
+    /// of the document in front; `false` when nothing was delivered.
     pub fn post_save(&self, path: &str, bytes: &[u8]) -> bool {
+        let front = self.told.borrow().as_ref().and_then(|t| t.0);
+        match front {
+            Some(doc) => self.post_save_of(doc, path, bytes),
+            None => self.ext.post_save(&file_name(path), bytes, None, false, None).is_ok(),
+        }
+    }
+
+    /// A file of document `doc`, unnumbered. The `saveAs` rule is this module's documentation's.
+    fn post_save_of(&self, doc: u64, path: &str, bytes: &[u8]) -> bool {
         let name = file_name(path);
-        let host_file = self.host_file.borrow().clone();
-        let save_as = crate::hostmode::save_as(&name, host_file.as_deref());
-        let sent = self.host.post_save(&name, bytes, None, save_as).is_ok();
+        let save_as = crate::hostmode::save_as(&name, self.host_file(doc).as_deref());
+        let sent = self.ext.post_save(&name, bytes, None, save_as, Some(doc)).is_ok();
         // After a Save As hand-over the host has the new file: the next Save of it sends its name
         // with `saveAs: false`. A failed send changes nothing, so a retry is still a Save As.
         if sent && save_as {
-            *self.host_file.borrow_mut() = Some(name);
+            self.host_files.borrow_mut().insert(doc, name);
         }
         sent
     }
@@ -212,34 +276,43 @@ impl Bridge {
 
 /// The host answered save `ticket`; one the bridge isn't waiting for (answered twice, made up)
 /// is ignored. A stored Save As makes its name the document's file.
-fn settle(confirms: &RefCell<Confirms>, host_file: &RefCell<Option<String>>, ticket: u64, outcome: Result<(), String>) {
+fn settle(confirms: &RefCell<Confirms>, host_files: &RefCell<HashMap<u64, String>>, ticket: u64, outcome: Result<(), String>) {
     let mut c = confirms.borrow_mut();
-    let Some(i) = c.waiting.iter().position(|(t, _)| *t == ticket) else { return };
-    let (_, becomes) = c.waiting.remove(i);
+    let Some(i) = c.waiting.iter().position(|(t, ..)| *t == ticket) else { return };
+    let (_, doc, becomes) = c.waiting.remove(i);
     if outcome.is_ok()
         && let Some(name) = becomes
     {
-        *host_file.borrow_mut() = Some(name);
+        host_files.borrow_mut().insert(doc, name);
     }
     c.settled.push((ticket, outcome));
 }
 
-/// The file an open message carries, queued for the app's own open path, or nothing when the
-/// payload isn't one (a `File` the app doesn't read, or over the open limit).
-fn deliver_open(opens: &OpenQueue, ctx: &egui::Context, host_file: &RefCell<Option<String>>, name: &str, data: &FileData) {
+/// The file an open message carries, numbered and queued for the app's own open path. One the
+/// app can't take (a `File`, or over the open limit) keeps its number and is answered at once:
+/// `opened` with no document.
+fn deliver_open(opens: &OpenQueue, counted: &RefCell<Opens>, ext: &Ext, ctx: &egui::Context, name: &str, data: &FileData) {
     let name = crate::hostmode::open_name(name);
+    let n = {
+        let mut c = counted.borrow_mut();
+        c.last = c.last.wrapping_add(1);
+        c.last
+    };
+    let refuse = |why: &str| {
+        log::warn!("host file {name} {why}; not opened");
+        let _ = ext.post_json("opened", &crate::hostmode::opened_fields(n, None, &name));
+    };
     let FileData::Bytes(array) = data else {
-        log::warn!("host file {name} came as a File; FigCraft reads bytes only; not opened");
+        refuse("came as a File; FigCraft reads bytes only");
         return;
     };
     if figcraft_ui_egui::browser_can_read(&name, data.size()).is_err() {
-        log::warn!("host file {name} is too large to open in the browser; not opened");
+        refuse("is too large to open in the browser");
         return;
     }
-    // The document's file is now the one the host sent: a Save of it under this name is
-    // `saveAs: false`.
-    *host_file.borrow_mut() = Some(name.clone());
-    opens.borrow_mut().push((name, array.to_vec()));
+    // The number ties the document it becomes to this file (`opened`).
+    counted.borrow_mut().names.insert(n, name.clone());
+    opens.borrow_mut().push((n, name, array.to_vec()));
     ctx.request_repaint();
 }
 
