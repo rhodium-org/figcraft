@@ -33,6 +33,9 @@
 //!   `figcraft:confirm-saves {value: true}` each document Save carries an `id` and counts once the
 //!   host answers `figcraft:saved {id}`, while `figcraft:save-failed {id, message}` leaves the
 //!   document unsaved and shows why. Copies and exports are never waited for.
+//!   `figcraft:close-all` closes every open document, unsaved changes and all, before the next
+//!   `figcraft:open`: a host that keeps one document at a time sends it once the person agreed to
+//!   lose what was not saved, so the app's unsaved state is the new document's alone.
 //!
 //! In host mode the app starts with no document (the home screen) and the host sends the file to
 //! edit; `?author=` names the user for comments and board notes.
@@ -76,6 +79,8 @@ pub struct Bridge {
     /// The host declared places of its own: it opens files ([`crate::host_ext`]).
     places: Rc<Cell<bool>>,
     confirms: Rc<RefCell<Confirms>>,
+    /// The host asked to close every open document (`close-all`), not yet done.
+    close_all: Rc<Cell<bool>>,
     /// The file the host opened, and after a `saveAs` hand-over the document's file: the name a
     /// Save under (`saveAs: false`) is decided against.
     host_file: Rc<RefCell<Option<String>>>,
@@ -88,7 +93,7 @@ impl Bridge {
     pub fn connect(canvas: &web_sys::HtmlCanvasElement) -> Option<Self> {
         let host = Host::connect(APP, canvas)?;
         let ext = Ext::new(APP, host.mode(), canvas)?;
-        Some(Self { host: Rc::new(host), ext, places: Rc::default(), confirms: Rc::default(), host_file: Rc::default() })
+        Some(Self { host: Rc::new(host), ext, places: Rc::default(), confirms: Rc::default(), close_all: Rc::default(), host_file: Rc::default() })
     }
 
     /// Hear the files the host sends, and queue each one on `opens` for the app's own open path
@@ -107,11 +112,12 @@ impl Bridge {
             _ => {}
         });
         // The extension messages (crate::host_ext).
-        let (places, confirms, host_file) = (self.places.clone(), self.confirms.clone(), self.host_file.clone());
+        let (places, confirms, host_file, close_all) = (self.places.clone(), self.confirms.clone(), self.host_file.clone(), self.close_all.clone());
         self.ext.listen(move |kind, message| {
             match kind {
                 "places" => places.set(crate::hostmode::offers_places(&message)),
                 "confirm-saves" => confirms.borrow_mut().on = crate::hostmode::flag(&message, "value"),
+                "close-all" => close_all.set(true),
                 "save-failed" => {
                     if let Some((ticket, why)) = crate::hostmode::save_failed(&message) {
                         settle(&confirms, &host_file, ticket, Err(why));
@@ -142,6 +148,11 @@ impl Bridge {
         // After a Save As is stored the host has the new file: the next Save of it is no Save As.
         confirms.waiting.push((ticket, save_as.then_some(name)));
         Delivery::Waiting(ticket)
+    }
+
+    /// Whether the host asked to close every open document since the last call.
+    pub fn take_close_all(&self) -> bool {
+        self.close_all.replace(false)
     }
 
     /// The saves the host answered since the last call.

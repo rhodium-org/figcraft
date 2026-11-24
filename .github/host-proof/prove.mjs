@@ -185,6 +185,22 @@ try {
   if (saves[0]?.id) await send('saved', { id: saves[0].id });
   await pause(500);
   check('a stored Save As leaves the design clean', (await doc()).ok?.dirty === false, (await doc()).ok?.dirty);
+
+  // ── close-all: one design at a time, the host having asked the person ───────────────
+  await edit(800);
+  t = await now();
+  await send('close-all', {});
+  await page.evaluate((b64) => window.send('open', { name: 'Poster.figcraft', bytes: Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer }), made.ok.data);
+  shown = '';
+  for (let i = 0; i < 40 && !shown.includes(FRAME); i++) { await pause(500); shown = JSON.stringify((await doc()).ok ?? ''); }
+  const open = await exec('doc.list');
+  const docs = Array.isArray(open.ok) ? open.ok.length : open.ok?.docs?.length;
+  check('figcraft:close-all closes every design, unsaved changes and all, before the next open',
+    docs === 1 && (await doc()).ok?.dirty === false && (await since(t)).some((e) => e.kind === 'dirty' && e.dirty === false), { docs, open, log: await since(t) });
+  await edit(900);
+  await pause(500);
+  check('an edit to the design opened after close-all is heard as unsaved', (await since(t)).filter((e) => e.kind === 'dirty').at(-1)?.dirty === true, await since(t));
+  await page.screenshot({ path: join(OUT, '3-after-close-all.png') });
 } finally {
   await writeFile(join(OUT, 'results.json'), JSON.stringify(results, null, 1));
   await browser.close();

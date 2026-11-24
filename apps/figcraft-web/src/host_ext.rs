@@ -11,6 +11,7 @@
 //! | `open-request` | app → host | none: File ▸ Open was asked for; the host shows its own way to open and sends `open` |
 //! | `confirm-saves` | host → app | `value`: from now on each document Save carries an `id` and counts once the host answers |
 //! | `save-failed` | host → app | `id`, `message?`: the save was not stored; the document stays unsaved and the app shows why |
+//! | `close-all` | host → app | none: close every open document, unsaved changes and all (the host asked the person), before the next `open` |
 //!
 //! The crate's `saved {id}` confirms a save. A host that never sends `confirm-saves` sees saves
 //! without an `id`, as before, and one that declares no places leaves File ▸ Open to the browser's
@@ -22,7 +23,7 @@ use wasm_bindgen::{JsCast as _, JsValue};
 use craft_web_host::{Mode, message_type};
 
 /// The kinds this module hears from the host.
-pub const INCOMING: [&str; 3] = ["places", "confirm-saves", "save-failed"];
+pub const INCOMING: [&str; 4] = ["places", "confirm-saves", "save-failed", "close-all"];
 
 #[derive(Clone)]
 enum Target {

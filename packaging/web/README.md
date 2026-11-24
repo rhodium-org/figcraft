@@ -217,6 +217,7 @@ that never sends them sees the behaviour above unchanged.
 | `figcraft:confirm-saves` | page → app | `value`: with `true`, each `figcraft:save` of the document carries an `id`, and the document stays unsaved until the page answers. Copies and exports carry none and are not waited for. |
 | `figcraft:saved` | page → app | `id`: stored. The document counts as saved as of the file handed over; an edit made meanwhile stays unsaved. |
 | `figcraft:save-failed` | page → app | `id`, `message?`: not stored. The document stays unsaved and the app shows `message`. |
+| `figcraft:close-all` | page → app | none: every open document closes, unsaved changes and all, before the next `figcraft:open`. For a page that keeps one document at a time and has asked the person; otherwise each open adds a tab and unsaved changes in an older tab keep `figcraft:dirty` true. |
 
 ## Renderer selection and fallback flags
 

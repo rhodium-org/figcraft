@@ -183,6 +183,18 @@ struct WebShell {
     opens: crate::host::OpenQueue,
 }
 
+/// Close every open document, unsaved changes and all, and any open still waiting to be read.
+fn close_all(fig: &mut FigApp) {
+    fig.ui.pending_opens.clear();
+    // Each close takes the first tab; a close that fails would loop, so it stops there.
+    for _ in 0..fig.session.docs.len() {
+        if fig.session.execute("file.close", &serde_json::json!({"index": 0, "force": true})).is_err() {
+            log::warn!("couldn't close a document the host asked to close");
+            break;
+        }
+    }
+}
+
 impl eframe::App for WebShell {
     // eframe runs `logic` for visible tabs and, with only `run_logic`, for hidden ones: keep
     // autosave/live/control deadlines moving without a paint. `FigApp::ui` does not repeat it.
@@ -193,6 +205,11 @@ impl eframe::App for WebShell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Every frame, hidden or not, starts here: what the last one left is what a panic keeps.
         UNSAVED.with(|u| u.try_borrow_mut().map(|mut u| u.follow(&self.fig.session))).ok();
+        // The host closes every open document before it sends the next (crate::host_ext): before
+        // this frame's opens, so the one it sends is the only one.
+        if self.host.as_ref().is_some_and(crate::host::Bridge::take_close_all) {
+            close_all(&mut self.fig);
+        }
         // Files the host sent join the app's own open queue (a dropped file's): the same
         // "Opening as a new file" card, and `file.open` with the contents once read.
         for (name, bytes) in std::mem::take(&mut *self.opens.borrow_mut()) {
