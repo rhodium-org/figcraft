@@ -42,6 +42,25 @@ pub trait Services {
     fn settled_saves(&mut self) -> Vec<(u64, Result<(), String>)> {
         Vec::new()
     }
+    /// [`Services::deliver`] for a save AutoSave made, not one the person asked for: a host page
+    /// can store it without asking anything.
+    fn deliver_auto(&mut self, doc: u64, name: &str, bytes: &[u8]) -> Delivery {
+        self.deliver(doc, name, bytes)
+    }
+    /// A host page writes the files it opened back in place, so AutoSave can run for them where
+    /// the app has no file of its own to write (the browser).
+    fn host_auto_saves(&self) -> bool {
+        false
+    }
+    /// The documents a host page said where it keeps (its places), newest first, for the Recents
+    /// list.
+    fn host_recents(&self) -> Vec<HostRecent> {
+        Vec::new()
+    }
+    /// Ask the host page to open `recent` again from its place; true when it was asked.
+    fn host_open_recent(&mut self, _recent: &HostRecent) -> bool {
+        false
+    }
     /// A host page that offers its own places to open from shows its own way to open a file
     /// instead of a file picker (File ▸ Open, Ctrl+O, Open on the home screen): true when it took
     /// the request, so the app asks the platform for no file.
@@ -110,6 +129,19 @@ pub trait Services {
     /// Ask for them (the browser asks the person): they join the font list by name, each read when
     /// text uses it.
     fn ask_for_local_fonts(&mut self) {}
+}
+
+/// A document a host page keeps in one of its places ([`Services::host_recents`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostRecent {
+    /// The file's name.
+    pub name: String,
+    /// The host's id for the place.
+    pub place: String,
+    /// The host's key for the document in that place.
+    pub key: String,
+    /// Where it lives, in the host's words.
+    pub label: String,
 }
 
 /// What became of a document file handed to [`Services::deliver`].

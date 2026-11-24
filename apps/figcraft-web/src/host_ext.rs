@@ -8,13 +8,15 @@
 //! | Kind | Direction | Fields |
 //! |---|---|---|
 //! | `places` | host → app | `places: [{ id, label }]`, replacing the list; any place means the host opens files |
-//! | `open-request` | app → host | none: File ▸ Open was asked for; the host shows its own way to open and sends `open` |
+//! | `open-request` | app → host | none: File ▸ Open was asked for; the host shows its own way to open and sends `open`. With `place` and `key`: a Recent entry the host said lives there, to open again from there |
+//! | `autosave` | host → app | `available`: the host writes the files it opened back in place, so AutoSave may run for them |
+//! | `document-place` | host → app | `doc?`, `place`, `key`, `label?`, `name?`: where a document lives in the host's places; it heads the home screen's Recent files |
 //! | `confirm-saves` | host → app | `value`: from now on each document Save carries an `id` and counts once the host answers |
 //! | `save-failed` | host → app | `id`, `message?`: the save was not stored; the document stays unsaved and the app shows why |
 //! | `close-all` | host → app | none: close every open document, unsaved changes and all (the host asked the person), before the next `open` |
 //! | `opened` | app → host | `open`, `doc`, `name`: the host's `open` number `open` (1 for its first) became document `doc` (`null`: it didn't open) |
 //! | `documents` | app → host | `front`, `docs: [{ doc, name, dirty }]`: the tabs, sent whenever they, their names, their unsaved state or the tab in front change |
-//! | `save` | app → host | the crate's fields, and `doc`: the document it is a file of (a copy or export: the tab in front) |
+//! | `save` | app → host | the crate's fields, `doc`: the document it is a file of (a copy or export: the tab in front), and `auto: true` when AutoSave sent it |
 //!
 //! The crate's `saved {id}` confirms a save. A host that never sends `confirm-saves` sees saves
 //! without an `id`, as before, and one that declares no places leaves File ▸ Open to the browser's
@@ -26,7 +28,7 @@ use wasm_bindgen::{JsCast as _, JsValue};
 use craft_web_host::{Mode, file_name, message_type};
 
 /// The kinds this module hears from the host.
-pub const INCOMING: [&str; 4] = ["places", "confirm-saves", "save-failed", "close-all"];
+pub const INCOMING: [&str; 6] = ["places", "confirm-saves", "save-failed", "close-all", "autosave", "document-place"];
 
 #[derive(Clone)]
 enum Target {
@@ -94,9 +96,13 @@ impl Ext {
         }
     }
 
-    /// `open-request`: File ▸ Open was asked for, and the host opens files.
-    pub fn post_open_request(&self) -> Result<(), String> {
-        self.post("open-request", &[], None)
+    /// `open-request`: File ▸ Open was asked for, and the host opens files; with `{place, key}`,
+    /// a Recent entry to open again from where the host keeps it.
+    pub fn post_open_request(&self, from: Option<(&str, &str)>) -> Result<(), String> {
+        match from {
+            Some((place, key)) => self.post("open-request", &[("place", place.into()), ("key", key.into())], None),
+            None => self.post("open-request", &[], None),
+        }
     }
 
     /// A message whose fields are `fields`, a JSON object (`opened`, `documents`).
@@ -122,7 +128,7 @@ impl Ext {
 
     /// `save`: the crate's fields (`name`, `bytes`, `saveAs`, `id?`) and `doc`. The bytes go as a
     /// transferred `ArrayBuffer`.
-    pub fn post_save(&self, name: &str, bytes: &[u8], id: Option<&str>, save_as: bool, doc: Option<u64>) -> Result<(), String> {
+    pub fn post_save(&self, name: &str, bytes: &[u8], id: Option<&str>, save_as: bool, doc: Option<u64>, auto: bool) -> Result<(), String> {
         let buffer = js_sys::Uint8Array::from(bytes).buffer();
         let mut fields =
             vec![("name", JsValue::from(file_name(Some(name), "document"))), ("bytes", buffer.clone().into()), ("saveAs", save_as.into())];
@@ -132,6 +138,9 @@ impl Ext {
         if let Some(doc) = doc {
             // A tab's uid is far below 2^53, so a JavaScript number holds it exactly.
             fields.push(("doc", JsValue::from_f64(doc as f64)));
+        }
+        if auto {
+            fields.push(("auto", true.into()));
         }
         self.post("save", &fields, Some(&buffer))
     }

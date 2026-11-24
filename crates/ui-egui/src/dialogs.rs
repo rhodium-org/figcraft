@@ -255,8 +255,10 @@ pub fn show(app: &mut FigApp, ctx: &Context) {
             if app.services.reduce_motion() {
                 crate::widgets::label(ui, tr("Your system asks for reduced motion: animations stay off."), t.text_secondary);
             }
-            // The browser has no files to save to.
-            if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.auto_save, tr("Save files automatically")) {
+            // The browser has no files to save to, unless the page hosting it writes them back.
+            if (!cfg!(target_arch = "wasm32") || app.services.host_auto_saves())
+                && crate::widgets::checkbox(ui, prefs.auto_save, tr("Save files automatically"))
+            {
                 toggles.push("pref.autoSave");
             }
             if !cfg!(target_arch = "wasm32") && crate::widgets::checkbox(ui, prefs.start_on_home, tr("Start on the Home screen")) {

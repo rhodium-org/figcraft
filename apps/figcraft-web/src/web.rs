@@ -313,7 +313,7 @@ impl Services for WebServices {
             return figcraft_ui_egui::Delivery::Delivered;
         }
         match &self.host {
-            Some(bridge) => bridge.deliver(doc, name, bytes),
+            Some(bridge) => bridge.deliver(doc, name, bytes, false),
             None => {
                 if self.download(name, bytes) {
                     figcraft_ui_egui::Delivery::Delivered
@@ -322,6 +322,22 @@ impl Services for WebServices {
                 }
             }
         }
+    }
+    /// AutoSave's file: only ever to a host that writes in place ([`Services::host_auto_saves`]).
+    fn deliver_auto(&mut self, doc: u64, name: &str, bytes: &[u8]) -> figcraft_ui_egui::Delivery {
+        match &self.host {
+            Some(bridge) => bridge.deliver(doc, name, bytes, true),
+            None => figcraft_ui_egui::Delivery::Refused,
+        }
+    }
+    fn host_auto_saves(&self) -> bool {
+        self.host.as_ref().is_some_and(crate::host::Bridge::auto_saves)
+    }
+    fn host_recents(&self) -> Vec<figcraft_ui_egui::HostRecent> {
+        self.host.as_ref().map(crate::host::Bridge::recents).unwrap_or_default()
+    }
+    fn host_open_recent(&mut self, recent: &figcraft_ui_egui::HostRecent) -> bool {
+        self.host.as_ref().is_some_and(|b| b.open_recent(recent))
     }
     fn settled_saves(&mut self) -> Vec<(u64, Result<(), String>)> {
         self.host.as_ref().map(crate::host::Bridge::settled_saves).unwrap_or_default()

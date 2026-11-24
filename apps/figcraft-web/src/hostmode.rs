@@ -73,6 +73,55 @@ pub fn opened_fields(open: u64, doc: Option<u64>, name: &str) -> serde_json::Val
     serde_json::json!({"open": open, "doc": doc, "name": name})
 }
 
+/// How many documents the host's Recents list keeps.
+pub const MAX_RECENTS: usize = 12;
+
+/// The longest place id, key, label or name taken from a host's `document-place`.
+const MAX_FIELD_CHARS: usize = 500;
+
+fn field(message: &serde_json::Value, key: &str) -> Option<String> {
+    let v: String = message[key].as_str()?.trim().chars().take(MAX_FIELD_CHARS).collect();
+    (!v.is_empty()).then_some(v)
+}
+
+/// A host's `document-place`: the document it is about (`doc`, if given) and the recent entry
+/// it makes, `{place, key}` required, `label` defaulting to the place and `name` to `fallback`
+/// (the file the host opened as that document), then to the key. `None` without a place or a key.
+pub fn document_place(message: &serde_json::Value, fallback: Option<&str>) -> Option<(Option<u64>, figcraft_ui_egui::HostRecent)> {
+    let place = field(message, "place")?;
+    let key = field(message, "key")?;
+    let label = field(message, "label").unwrap_or_else(|| place.clone());
+    let name = field(message, "name").or_else(|| fallback.map(str::to_string)).unwrap_or_else(|| key.clone());
+    Some((message["doc"].as_u64(), figcraft_ui_egui::HostRecent { name, place, key, label }))
+}
+
+/// `recents` with `recent` in front: one entry per place and key, newest first, at most
+/// [`MAX_RECENTS`].
+pub fn remember(recents: &mut Vec<figcraft_ui_egui::HostRecent>, recent: figcraft_ui_egui::HostRecent) {
+    recents.retain(|r| !(r.place == recent.place && r.key == recent.key));
+    recents.insert(0, recent);
+    recents.truncate(MAX_RECENTS);
+}
+
+/// The Recents list as kept in the browser's storage.
+pub fn recents_to_json(recents: &[figcraft_ui_egui::HostRecent]) -> String {
+    serde_json::Value::Array(recents.iter().map(|r| serde_json::json!({"name": r.name, "place": r.place, "key": r.key, "label": r.label})).collect())
+        .to_string()
+}
+
+/// The Recents list read back from the browser's storage; anything unreadable is an empty list.
+pub fn recents_from_json(text: &str) -> Vec<figcraft_ui_egui::HostRecent> {
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(text) else { return Vec::new() };
+    let mut recents = Vec::new();
+    for item in items.iter().rev() {
+        if let Some((_, r)) = document_place(item, None) {
+            remember(&mut recents, r);
+        }
+    }
+    recents
+}
+
+/// The longest reason taken from a host's `save-failed`.
 const MAX_REASON_CHARS: usize = 500;
 
 /// Whether a host's `places` message offers any place to open from: a `places` list holding at
@@ -128,6 +177,57 @@ mod tests {
     fn opened_names_the_host_s_open_and_the_document_or_none() {
         assert_eq!(opened_fields(2, Some(7), "Poster.figcraft"), json!({"open": 2, "doc": 7, "name": "Poster.figcraft"}));
         assert_eq!(opened_fields(3, None, "Broken.figcraft"), json!({"open": 3, "doc": null, "name": "Broken.figcraft"}));
+    }
+
+    fn recent(place: &str, key: &str) -> figcraft_ui_egui::HostRecent {
+        figcraft_ui_egui::HostRecent { name: format!("{key}.figcraft"), place: place.into(), key: key.into(), label: place.into() }
+    }
+
+    #[test]
+    fn a_document_place_needs_a_place_and_a_key_and_fills_in_the_rest() {
+        let (doc, r) =
+            document_place(&json!({"doc": 7, "place": "github", "key": "acme/x@main:a.figcraft", "label": "acme/x · main"}), Some("a.figcraft"))
+                .unwrap();
+        assert_eq!(doc, Some(7));
+        assert_eq!(
+            r,
+            figcraft_ui_egui::HostRecent {
+                name: "a.figcraft".into(),
+                place: "github".into(),
+                key: "acme/x@main:a.figcraft".into(),
+                label: "acme/x · main".into()
+            }
+        );
+        let (_, r) = document_place(&json!({"place": "computer", "key": "Wall.figcraft"}), None).unwrap();
+        assert_eq!((r.name.as_str(), r.label.as_str()), ("Wall.figcraft", "computer"), "the key names it, the place labels it");
+        for junk in [json!({"place": "github"}), json!({"key": "k"}), json!({"place": " ", "key": "k"}), json!({"place": 3, "key": "k"}), json!(null)]
+        {
+            assert_eq!(document_place(&junk, None), None, "{junk}");
+        }
+        let long = "x".repeat(2000);
+        assert_eq!(document_place(&json!({"place": "p", "key": long}), None).map(|(_, r)| r.key.len()), Some(MAX_FIELD_CHARS));
+    }
+
+    #[test]
+    fn recents_keep_one_entry_per_place_and_key_newest_first_and_a_dozen_at_most() {
+        let mut recents = Vec::new();
+        remember(&mut recents, recent("github", "a"));
+        remember(&mut recents, recent("computer", "a"));
+        remember(&mut recents, recent("github", "a"));
+        assert_eq!(recents.iter().map(|r| (r.place.as_str(), r.key.as_str())).collect::<Vec<_>>(), [("github", "a"), ("computer", "a")]);
+        for i in 0..30 {
+            remember(&mut recents, recent("github", &i.to_string()));
+        }
+        assert_eq!(recents.len(), MAX_RECENTS);
+        assert_eq!(recents[0].key, "29");
+    }
+
+    #[test]
+    fn recents_survive_the_browser_s_storage_and_junk_reads_as_none() {
+        let recents = vec![recent("github", "b"), recent("computer", "a")];
+        assert_eq!(recents_from_json(&recents_to_json(&recents)), recents, "order kept");
+        assert!(recents_from_json("not json").is_empty());
+        assert_eq!(recents_from_json(r#"[{"place":"p"},{"place":"p","key":"k"}]"#).len(), 1, "an entry without a key is dropped");
     }
 
     #[test]

@@ -375,7 +375,9 @@ fn recents(app: &mut FigApp, ui: &mut Ui, t: &Tokens) {
         getting_started(app, ui, t);
     }
     open_files(app, ui, t, "");
-    if crate::home_recents::listed(&app.session.prefs.recent_files).next().is_none() {
+    // A host page's places: its documents, opened again from where it keeps them.
+    let hosted = host_recents(app, ui, t);
+    if hosted == 0 && crate::home_recents::listed(&app.session.prefs.recent_files).next().is_none() {
         // A first run: nothing to reopen yet, so offer something to start from.
         subheading(ui, t, tr("Start from a template"));
         let shown: Vec<&Template> = TEMPLATES.iter().take(FIRST_RUN).collect();
@@ -418,6 +420,27 @@ fn open_files(app: &mut FigApp, ui: &mut Ui, t: &Tokens, query: &str) -> usize {
         app.ui.home = false;
     }
     count
+}
+
+/// The documents a host page said where it keeps, newest first, a row each with the host's words
+/// for where; choosing one asks the host to open it from there. How many are listed.
+fn host_recents(app: &mut FigApp, ui: &mut Ui, t: &Tokens) -> usize {
+    let recents = app.services.host_recents();
+    if recents.is_empty() {
+        return 0;
+    }
+    subheading(ui, t, tr("Recent files"));
+    let mut chosen = None;
+    for (i, r) in recents.iter().enumerate() {
+        let row = FileRow { mark: None, name: &r.name, ink: t.text, detail: &r.label, detail_size: 11.0, detail_ink: t.text_secondary };
+        if listed(ui, t, ui.scope_id().with(("host-recent", i)), 36.0, &row) {
+            chosen = Some(i);
+        }
+    }
+    if let Some(r) = chosen.and_then(|i| recents.get(i)) {
+        app.services.host_open_recent(r);
+    }
+    recents.len()
 }
 
 /// The file joined from the home screen (a code, or one of your online files) opened in a tab of

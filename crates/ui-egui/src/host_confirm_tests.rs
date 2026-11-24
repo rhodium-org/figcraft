@@ -22,6 +22,10 @@ struct Shared {
     opens: usize,
     /// Whether the host offers places to open from.
     places: bool,
+    /// Whether the host writes its files back in place (AutoSave may run).
+    auto_saves: bool,
+    /// The tickets of the saves AutoSave made.
+    auto: Vec<u64>,
 }
 
 /// A page host that numbers every save and answers when the test says.
@@ -40,6 +44,16 @@ impl Services for ConfirmingHost {
         let ticket = s.handed.len() as u64 + 1;
         s.handed.push((ticket, name.to_string()));
         Delivery::Waiting(ticket)
+    }
+    fn deliver_auto(&mut self, doc: u64, name: &str, bytes: &[u8]) -> Delivery {
+        let delivery = self.deliver(doc, name, bytes);
+        if let Delivery::Waiting(ticket) = delivery {
+            self.0.borrow_mut().auto.push(ticket);
+        }
+        delivery
+    }
+    fn host_auto_saves(&self) -> bool {
+        self.0.borrow().auto_saves
     }
     fn settled_saves(&mut self) -> Vec<(u64, Result<(), String>)> {
         std::mem::take(&mut self.0.borrow_mut().answers)
@@ -127,4 +141,45 @@ fn a_host_with_places_takes_file_open() {
     app.open_dialog();
     assert_eq!(shared.borrow().opens, 1);
     assert!(app.pending_dialog.is_none(), "no file picker was started");
+}
+
+fn tick(app: &mut FigApp, now: f64) {
+    app.host_auto_save_tick(&egui::Context::default(), now);
+}
+
+#[test]
+fn autosave_waits_for_the_host_to_say_it_writes_in_place() {
+    let (mut app, shared) = app();
+    app.session.prefs.auto_save = true;
+    tick(&mut app, 0.0);
+    tick(&mut app, 60.0);
+    assert!(shared.borrow().handed.is_empty(), "no host AutoSave without the host's word");
+}
+
+#[test]
+fn autosave_hands_a_changed_host_file_over_once_editing_stops_and_counts_on_the_answer() {
+    let (mut app, shared) = app();
+    app.session.prefs.auto_save = true;
+    shared.borrow_mut().auto_saves = true;
+    tick(&mut app, 0.0);
+    assert!(shared.borrow().handed.is_empty(), "not before the quiet");
+    tick(&mut app, 1.0);
+    assert!(shared.borrow().handed.is_empty());
+    tick(&mut app, crate::AUTO_SAVE_SECS + 0.1);
+    assert_eq!(shared.borrow().handed, [(1, "design.figcraft".to_string())]);
+    assert_eq!(shared.borrow().auto, [1], "marked as AutoSave's");
+    tick(&mut app, crate::AUTO_SAVE_SECS + 10.0);
+    assert_eq!(shared.borrow().handed.len(), 1, "nothing more while that save waits for its answer");
+    answer(&mut app, &shared, 1, Ok(()));
+    assert!(!dirty(&app));
+}
+
+#[test]
+fn autosave_stays_off_when_the_person_turned_it_off() {
+    let (mut app, shared) = app();
+    app.session.prefs.auto_save = false;
+    shared.borrow_mut().auto_saves = true;
+    tick(&mut app, 0.0);
+    tick(&mut app, 60.0);
+    assert!(shared.borrow().handed.is_empty());
 }

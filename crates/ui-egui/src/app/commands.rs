@@ -308,6 +308,7 @@ impl FigApp {
         let now = self.clock.now();
         self.autosave_tick(ctx, now);
         self.auto_save_tick(ctx, now);
+        self.host_auto_save_tick(ctx, now);
         self.host_saves_tick();
         updates_ui::tick(self, ctx);
         self.logic_ticked = true;

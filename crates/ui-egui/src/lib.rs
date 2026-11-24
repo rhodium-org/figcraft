@@ -374,7 +374,7 @@ pub(crate) use clock::repaint_in;
 pub use clock::{AUTO_SAVE_SECS, AUTOSAVE_SECS, FrameClock, ToastClock};
 pub(crate) use open::{drop_overlay, dropped_bytes, is_document, opens};
 pub use services::{
-    ContentsFuture, Delivery, DialogFuture, MAX_CLIPBOARD_PNG_BYTES, NoServices, ReadFuture, Services, browser_can_read, browser_stopped,
+    ContentsFuture, Delivery, DialogFuture, HostRecent, MAX_CLIPBOARD_PNG_BYTES, NoServices, ReadFuture, Services, browser_can_read, browser_stopped,
     egui_copy_png, egui_copy_text, unreadable,
 };
 use services::{DialogDone, PickFuture, Picked, RepaintWaker};
@@ -608,6 +608,9 @@ pub struct UiState {
     /// With auto-save on: when (monotonic [`FrameClock`], seconds) files with unsaved changes are next saved, and
     /// the revisions of those files it waits on (a change restarts the wait).
     pub auto_save_at: Option<(f64, u64)>,
+    /// When the files a host page writes back are next saved automatically, and the changes that
+    /// date is for ([`FigApp::host_auto_save_tick`]).
+    pub host_auto_save_at: Option<(f64, u64)>,
     /// Files being encoded for auto-save on threads of their own (tab `uid`).
     pub auto_saving: Vec<(u64, AutoSaveEncoding)>,
     /// The Assets panel shows the libraries view (publish this file, enabled libraries).
@@ -745,6 +748,7 @@ impl Default for UiState {
             held: egui::Modifiers::NONE,
             next_autosave: 0.0,
             auto_save_at: None,
+            host_auto_save_at: None,
             auto_saving: Vec::new(),
             libraries: false,
             nav: a11y::Nav::default(),

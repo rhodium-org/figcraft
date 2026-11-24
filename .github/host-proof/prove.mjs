@@ -246,6 +246,46 @@ try {
   await pause(500);
   const refused = (await since(t)).filter((e) => e.kind === 'opened');
   check('an open the app cannot take still uses its number and says no document', refused.length === 1 && refused[0].doc === null && refused[0].open === opened[1].open + 1, refused);
+
+  // ── AutoSave through a host that writes in place ───────────────────────────────────
+  await exec('pref.autoSave', { on: true });
+  t = await now();
+  await edit(1100);
+  await pause(5000);
+  check('without figcraft:autosave nothing is saved on its own', !(await since(t)).some((e) => e.kind === 'save'), await since(t));
+  await send('autosave', { available: true });
+  t = await now();
+  await edit(1200);
+  await page.waitForFunction((x) => window.__log.some((e) => e.kind === 'save' && e.at > x), { timeout: 30_000 }, t).catch(() => {});
+  saves = (await since(t)).filter((e) => e.kind === 'save');
+  check('with figcraft:autosave {available: true}, a change is handed over on its own, as auto: true, for its document',
+    saves.length === 1 && saves[0].auto === true && saves[0].doc === second && saves[0].name === 'Poster.figcraft' && typeof saves[0].id === 'string', saves);
+  if (saves[0]?.id) await send('saved', { id: saves[0].id });
+  await pause(800);
+  tabs = (await since(t)).filter((e) => e.kind === 'documents').at(-1);
+  check('the AutoSave the host stored counts: the tab is saved', tabs?.docs?.find((d) => d.doc === second)?.dirty === false, tabs);
+  await send('autosave', { available: false });
+  await exec('pref.autoSave', { on: false });
+
+  // ── document-place: the home screen's Recent files, opened again through the host ──
+  await send('document-place', { doc: second, place: 'github', key: 'acme/designs@main:Poster.figcraft', label: 'acme/designs · main · Poster.figcraft' });
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('figcraft.hostRecents') ?? '[]'));
+  check('figcraft:document-place is remembered in the browser for Recents, named after the file the host opened',
+    stored.length === 1 && stored[0].place === 'github' && stored[0].key === 'acme/designs@main:Poster.figcraft' && stored[0].name === 'Poster.figcraft', stored);
+  await page.evaluate(() => window.figcraft.request('ui.set', { home: true }));
+  await pause(1500);
+  await page.screenshot({ path: join(OUT, '4-home-recents.png') });
+  t = await now();
+  // The row is found by its name on the home screen, as a person finds it.
+  const row = await page.evaluate(() => window.figcraft.request('ui.inspect', {}).then((u) => JSON.stringify(u)));
+  let reopen = [];
+  for (let y = 120; y <= 860 && reopen.length === 0; y += 14) {
+    await page.mouse.click(420, y);
+    await pause(150);
+    reopen = (await since(t)).filter((e) => e.kind === 'open-request' && e.key !== undefined);
+    await page.evaluate(() => window.figcraft.request('ui.set', { home: true }));
+  }
+  check('choosing it in Recents sends figcraft:open-request {place, key}', reopen.length === 1 && reopen[0].place === 'github' && reopen[0].key === 'acme/designs@main:Poster.figcraft', { reopen, inspected: row.length });
 } finally {
   await writeFile(join(OUT, 'results.json'), JSON.stringify(results, null, 1));
   await browser.close();

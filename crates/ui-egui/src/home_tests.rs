@@ -986,3 +986,38 @@ fn a_host_page_s_numbered_open_that_failed_records_no_document() {
     assert!(u.app.session.docs.is_empty());
     assert_eq!(u.app.ui.host_opened, [(1, None)]);
 }
+
+/// A page host that keeps documents in places of its own and remembers which reopen was asked.
+struct PlacesHost(std::rc::Rc<std::cell::RefCell<Vec<crate::HostRecent>>>);
+
+impl crate::Services for PlacesHost {
+    fn host_recents(&self) -> Vec<crate::HostRecent> {
+        vec![
+            crate::HostRecent {
+                name: "Poster.figcraft".into(),
+                place: "github".into(),
+                key: "acme/designs@main:Poster.figcraft".into(),
+                label: "acme/designs · main".into(),
+            },
+            crate::HostRecent { name: "Wall.figcraft".into(), place: "computer".into(), key: "Wall.figcraft".into(), label: "This computer".into() },
+        ]
+    }
+    fn host_open_recent(&mut self, recent: &crate::HostRecent) -> bool {
+        self.0.borrow_mut().push(recent.clone());
+        true
+    }
+}
+
+#[test]
+fn a_host_page_s_documents_are_listed_in_recents_and_reopen_through_it() {
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut u = first_run();
+    u.app.services = Box::new(PlacesHost(asked.clone()));
+    u.app.ui.home = true;
+    let s = settle(&mut u);
+    assert!(has_text(&s, "Recent files") && has_text(&s, "Poster.figcraft") && has_text(&s, "acme/designs · main") && has_text(&s, "This computer"));
+    click(&mut u, text_center(&s, "Poster.figcraft"));
+    let asked = asked.borrow();
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].place.as_str(), asked[0].key.as_str()), ("github", "acme/designs@main:Poster.figcraft"));
+}

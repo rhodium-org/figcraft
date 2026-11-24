@@ -221,6 +221,9 @@ that never sends them sees the behaviour above unchanged.
 | `figcraft:opened` | app → page | `open`, `doc`, `name`: the page's `figcraft:open` number `open` (1 for its first; every open counts, one the app can't take too) became the document `doc`, a tab's id that stays the same while it is open; `doc` is `null` when it didn't open. |
 | `figcraft:documents` | app → page | `front` (the tab in front, `null` on the home screen) and `docs: [{ doc, name, dirty }]` in tab order, sent whenever the tabs, their names, their unsaved state or the tab in front change. |
 
+| `figcraft:autosave` | page → app | `available`: the page writes the files it opened back in place. Preferences then offers Save files automatically, and with it on each such document is handed over a few seconds after it last changed, as a `figcraft:save` with `auto: true`. |
+| `figcraft:document-place` | page → app | `doc?`, `place`, `key`, `label?`, `name?`: where a document lives among the page's places. It heads Recent files on the home screen (kept in the browser's storage, a dozen at most); choosing it sends `figcraft:open-request {place, key}`. |
+
 Every `figcraft:save` also carries `doc`: the document it is a file of (for a copy or an export, the
 tab in front). The file a page opened is kept per document, so `saveAs` is decided for each tab,
 and two documents of one name never save as each other.

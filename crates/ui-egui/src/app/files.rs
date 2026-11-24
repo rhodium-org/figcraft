@@ -325,6 +325,60 @@ impl FigApp {
         }
     }
 
+    /// With auto-save on, where a host page writes back the files it opened
+    /// ([`Services::host_auto_saves`]): each such document is handed to it [`AUTO_SAVE_SECS`]
+    /// after it last changed (not during a gesture, a live preview or while a version is shown, nor
+    /// while a save of it waits for the host's answer). Encoded here: the browser has no threads.
+    pub(crate) fn host_auto_save_tick(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.session.prefs.auto_save || !self.services.host_auto_saves() {
+            self.ui.host_auto_save_at = None;
+            return;
+        }
+        let waiting: Vec<u64> = self.host_saves.iter().map(|(_, s, _)| s.uid()).collect();
+        let services = &self.services;
+        let due: Vec<(u64, String)> = self
+            .session
+            .docs
+            .iter()
+            .filter(|d| d.branch_of.is_none() && d.preview.is_none() && d.is_dirty() && !waiting.contains(&d.uid))
+            .filter_map(|d| Some((d.uid, services.host_file(d.uid).filter(|n| is_document_file(n))?)))
+            .collect();
+        let changes =
+            due.iter().filter_map(|(uid, _)| self.session.docs.iter().find(|d| d.uid == *uid)).map(|d| d.revision).reduce(u64::wrapping_add);
+        let Some(changes) = changes else {
+            self.ui.host_auto_save_at = None;
+            return;
+        };
+        let at = match self.ui.host_auto_save_at {
+            Some((at, c)) if c == changes => at,
+            _ => now + AUTO_SAVE_SECS,
+        };
+        self.ui.host_auto_save_at = Some((at, changes));
+        if now < at || self.session.docs.iter().any(|d| d.interaction.is_some() || d.text_preview.is_some()) {
+            repaint_in(ctx, if now < at { at - now } else { 1.0 });
+            return;
+        }
+        self.ui.host_auto_save_at = None;
+        for (uid, name) in due {
+            let Some(ds) = self.session.docs.iter().find(|d| d.uid == uid) else { continue };
+            let snapshot = figcraft_engine::cmd::file::FileSnapshot::of(ds);
+            let bytes = match snapshot.encode() {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    self.toast(i18n::trf("Couldn't save automatically: {error}", &[("error", &e.to_string())]));
+                    continue;
+                }
+            };
+            match self.services.deliver_auto(uid, &name, &bytes) {
+                Delivery::Delivered => {
+                    snapshot.delivered(&mut self.session);
+                }
+                Delivery::Waiting(ticket) => self.host_saves.push((ticket, snapshot, name)),
+                Delivery::Refused => {}
+            }
+        }
+    }
+
     /// Write the files whose auto-save encoding finished; the first error, if one failed.
     fn auto_save_done(&mut self) -> Option<String> {
         if self.ui.auto_saving.is_empty() {

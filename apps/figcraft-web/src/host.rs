@@ -96,6 +96,18 @@ pub struct Bridge {
     opens: Rc<RefCell<Opens>>,
     /// What the host last heard in `documents`: the tab in front and the open documents.
     told: Rc<RefCell<Option<Told>>>,
+    /// The host writes its files back in place (`autosave {available}`), so AutoSave may run.
+    auto_saves: Rc<Cell<bool>>,
+    /// The documents the host said where it keeps (`document-place`), newest first: the home
+    /// screen's Recent files, kept in the browser's storage between visits.
+    recents: Rc<RefCell<Vec<figcraft_ui_egui::HostRecent>>>,
+}
+
+/// The browser storage key the host's Recent files are kept under.
+const RECENTS_KEY: &str = "figcraft.hostRecents";
+
+fn storage() -> Option<web_sys::Storage> {
+    web_sys::window()?.local_storage().ok().flatten()
 }
 
 type HostFiles = Rc<RefCell<HashMap<u64, String>>>;
@@ -125,6 +137,10 @@ impl Bridge {
             host_files: Rc::default(),
             opens: Rc::default(),
             told: Rc::default(),
+            auto_saves: Rc::default(),
+            recents: Rc::new(RefCell::new(
+                storage().and_then(|s| s.get_item(RECENTS_KEY).ok().flatten()).map(|t| crate::hostmode::recents_from_json(&t)).unwrap_or_default(),
+            )),
         })
     }
 
@@ -146,8 +162,20 @@ impl Bridge {
         });
         // The extension messages (crate::host_ext).
         let (places, confirms, host_files, close_all) = (self.places.clone(), self.confirms.clone(), self.host_files.clone(), self.close_all.clone());
+        let (auto_saves, recents) = (self.auto_saves.clone(), self.recents.clone());
         self.ext.listen(move |kind, message| {
             match kind {
+                "autosave" => auto_saves.set(crate::hostmode::flag(&message, "available")),
+                "document-place" => {
+                    let fallback = message["doc"].as_u64().and_then(|d| host_files.borrow().get(&d).cloned());
+                    if let Some((_, recent)) = crate::hostmode::document_place(&message, fallback.as_deref()) {
+                        let mut list = recents.borrow_mut();
+                        crate::hostmode::remember(&mut list, recent);
+                        if let Some(s) = storage() {
+                            let _ = s.set_item(RECENTS_KEY, &crate::hostmode::recents_to_json(&list));
+                        }
+                    }
+                }
                 "places" => places.set(crate::hostmode::offers_places(&message)),
                 "confirm-saves" => confirms.borrow_mut().on = crate::hostmode::flag(&message, "value"),
                 "close-all" => close_all.set(true),
@@ -164,17 +192,17 @@ impl Bridge {
 
     /// Hand a file of document `doc` the app saves to the host. Numbered, and answered later,
     /// once the host asked to confirm saves; otherwise done when handed over, as before.
-    pub fn deliver(&self, doc: u64, path: &str, bytes: &[u8]) -> Delivery {
+    pub fn deliver(&self, doc: u64, path: &str, bytes: &[u8], auto: bool) -> Delivery {
         let name = file_name(path);
         let host_file = self.host_file(doc);
         let save_as = crate::hostmode::save_as(&name, host_file.as_deref());
         let mut confirms = self.confirms.borrow_mut();
         if !confirms.on {
             drop(confirms);
-            return if self.post_save_of(doc, path, bytes) { Delivery::Delivered } else { Delivery::Refused };
+            return if self.post_save_of(doc, path, bytes, auto) { Delivery::Delivered } else { Delivery::Refused };
         }
         let ticket = confirms.last.wrapping_add(1);
-        if self.ext.post_save(&name, bytes, Some(&ticket.to_string()), save_as, Some(doc)).is_err() {
+        if self.ext.post_save(&name, bytes, Some(&ticket.to_string()), save_as, Some(doc), auto).is_err() {
             return Delivery::Refused;
         }
         confirms.last = ticket;
@@ -206,6 +234,21 @@ impl Bridge {
         }
     }
 
+    /// The host writes its files back in place, so AutoSave may run for them.
+    pub fn auto_saves(&self) -> bool {
+        self.auto_saves.get()
+    }
+
+    /// The host's documents for the home screen's Recent files.
+    pub fn recents(&self) -> Vec<figcraft_ui_egui::HostRecent> {
+        self.recents.borrow().clone()
+    }
+
+    /// Ask the host to open `recent` again from its place.
+    pub fn open_recent(&self, recent: &figcraft_ui_egui::HostRecent) -> bool {
+        self.ext.post_open_request(Some((&recent.place, &recent.key))).is_ok()
+    }
+
     /// Whether the host asked to close every open document since the last call.
     pub fn take_close_all(&self) -> bool {
         self.close_all.replace(false)
@@ -219,7 +262,7 @@ impl Bridge {
     /// File ▸ Open, where the host declared places of its own: it is asked to open instead
     /// (`open-request`); true when it was asked.
     pub fn host_open(&self) -> bool {
-        self.places.get() && self.ext.post_open_request().is_ok()
+        self.places.get() && self.ext.post_open_request(None).is_ok()
     }
 
     /// `?author=`: the host's name for the user signs comments and board notes.
@@ -249,16 +292,16 @@ impl Bridge {
     pub fn post_save(&self, path: &str, bytes: &[u8]) -> bool {
         let front = self.told.borrow().as_ref().and_then(|t| t.0);
         match front {
-            Some(doc) => self.post_save_of(doc, path, bytes),
-            None => self.ext.post_save(&file_name(path), bytes, None, false, None).is_ok(),
+            Some(doc) => self.post_save_of(doc, path, bytes, false),
+            None => self.ext.post_save(&file_name(path), bytes, None, false, None, false).is_ok(),
         }
     }
 
     /// A file of document `doc`, unnumbered. The `saveAs` rule is this module's documentation's.
-    fn post_save_of(&self, doc: u64, path: &str, bytes: &[u8]) -> bool {
+    fn post_save_of(&self, doc: u64, path: &str, bytes: &[u8], auto: bool) -> bool {
         let name = file_name(path);
         let save_as = crate::hostmode::save_as(&name, self.host_file(doc).as_deref());
-        let sent = self.ext.post_save(&name, bytes, None, save_as, Some(doc)).is_ok();
+        let sent = self.ext.post_save(&name, bytes, None, save_as, Some(doc), auto).is_ok();
         // After a Save As hand-over the host has the new file: the next Save of it sends its name
         // with `saveAs: false`. A failed send changes nothing, so a retry is still a Save As.
         if sent && save_as {
