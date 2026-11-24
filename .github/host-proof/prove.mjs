@@ -180,7 +180,8 @@ try {
   await menu('file.saveAs');
   await pause(500);
   saves = (await since(t)).filter((e) => e.kind === 'save');
-  check('Save As carries saveAs and an id', saves.length === 1 && saves[0].saveAs === true && typeof saves[0].id === 'string', saves);
+  // saveAs follows upstream's rule (hostmode::save_as): under the name of the host's own file it is a Save, false.
+  check('Save As carries an id, and saveAs by upstream\'s name rule', saves.length === 1 && saves[0].saveAs === false && saves[0].name === 'Poster.figcraft' && typeof saves[0].id === 'string', saves);
   if (saves[0]?.id) await send('saved', { id: saves[0].id });
   await pause(500);
   check('a stored Save As leaves the design clean', (await doc()).ok?.dirty === false, (await doc()).ok?.dirty);
